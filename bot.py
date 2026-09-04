@@ -200,7 +200,7 @@ async def button_router(
 
     await query.message.delete()
     await query.message.reply_photo(
-        photo=InputFile(qr_bio, filename="qr.png")
+        photo=InputFile(qr_bio, filename="qr.png"),
         caption=payment_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.HTML,
