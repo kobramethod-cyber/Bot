@@ -2,7 +2,6 @@ import io
 import logging
 import os
 from telegram import (
-    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
