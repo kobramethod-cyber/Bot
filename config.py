@@ -1,6 +1,8 @@
-BOT_TOKEN = "8639243087:AAHQgRU5Et70xK76RGI57c88-Bvy0ELI6gg"
+import os
 
-MONGO_URI = "mongodb+srv://Kobra:Kartik9307@cluster0.oxqflcj.mongodb.net/premium_bot?retryWrites=true&w=majority"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+MONGO_URI = os.getenv("MONGO_URI")
 
 ADMINS = [
     1936430807,
@@ -8,5 +10,3 @@ ADMINS = [
 ]
 
 UPI_ID = "nagargoje12@ptyes"
-
-DB_NAME = "MONGO_URI"
