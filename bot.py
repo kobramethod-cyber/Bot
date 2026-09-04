@@ -242,11 +242,11 @@ async def button_router(
 
     await query.message.delete()
     await query.message.reply_photo(
-        photo=BufferedInputFile(qr_bio.read(), filename="qr.png"),
-        caption=payment_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML,
-    )
+    photo=qr_bio,
+    caption=payment_text,
+    reply_markup=InlineKeyboardMarkup(keyboard),
+    parse_mode=ParseMode.HTML,
+)
     return WAITING_FOR_SCREENSHOT
 
   elif query.data == "how":
