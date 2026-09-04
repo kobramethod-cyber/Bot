@@ -2,6 +2,7 @@ import io
 import logging
 import os
 from telegram import (
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -31,6 +32,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_IDS = [1936430807, 8720701910]
 ADMIN_USERNAME = "@Vidsell6"
+UPI_ID = "nagargoje12@ptyes"
+DESI_GROUP_LINK = "https://t.me/+H_y0MBr_c0g2ZDk1"
 
 PHOTO_ID = (
     "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ"
@@ -60,36 +63,9 @@ db = client["premium_access_hub"]
 users_col = db["users"]
 purchases_col = db["purchases"]
 settings_col = db["settings"]
-products_col = db["products"]
 
 
-async def init_default_products():
-  count = await products_col.count_documents({})
-  if count == 0:
-    default_products = [
-        {
-            "product_id": "prod_1",
-            "name": "Premium Access",
-            "price": 50,
-            "link": "https://t.me/+H_y0MBr_c0g2ZDk1",
-        },
-        {
-            "product_id": "prod_2",
-            "name": "VIP Access",
-            "price": 100,
-            "link": "https://t.me/+bxjfe4zWwqQ4ZjY0",
-        },
-        {
-            "product_id": "prod_3",
-            "name": "Lifetime Bundle",
-            "price": 200,
-            "link": "https://t.me/+h7qBjBXj13djMWI1",
-        },
-    ]
-    await products_col.insert_many(default_products)
-
-
-def generate_upi_qr(upi_id: str, amount: int, name: str = "Premium Hub"):
+def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
   upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR"
   qr = qrcode.QRCode(
       version=1,
@@ -122,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   )
 
   keyboard = [
-      [InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_menu")],
+      [InlineKeyboardButton("🛒 Buy Premium", callback_data="buy")],
       [
           InlineKeyboardButton("❓ How To Buy", callback_data="how"),
           InlineKeyboardButton(
@@ -151,7 +127,7 @@ async def button_router(
 
   if query.data == "main_menu":
     keyboard = [
-        [InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_menu")],
+        [InlineKeyboardButton("🛒 Buy Premium", callback_data="buy")],
         [
             InlineKeyboardButton("❓ How To Buy", callback_data="how"),
             InlineKeyboardButton(
@@ -172,7 +148,7 @@ async def button_router(
     )
     return ConversationHandler.END
 
-  elif query.data == "buy_menu":
+  elif query.data == "buy":
     existing_pending = await purchases_col.find_one(
         {"user_id": user.id, "status": "pending"}
     )
@@ -182,71 +158,32 @@ async def button_router(
       )
       return ConversationHandler.END
 
-    products = await products_col.find({}).to_list(length=10)
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                f"📦 {p['name']} - ₹{p['price']}",
-                callback_data=f"select_prod_{p['product_id']}",
-            )
-        ]
-        for p in products
-    ]
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
-
-    await query.message.edit_caption(
-        caption="🛍️ <b>Select a Product / Plan Below:</b>",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML,
-    )
-    return ConversationHandler.END
-
-  elif query.data.startswith("select_prod_"):
-    prod_id = query.data.split("_")[2]
-    product = await products_col.find_one({"product_id": prod_id})
-
-    if not product:
-      await query.answer("Product not found!", show_alert=True)
-      return ConversationHandler.END
-
-    existing_pending = await purchases_col.find_one(
-        {"user_id": user.id, "status": "pending"}
-    )
-    if existing_pending:
-      await query.message.reply_text(
-          "⚠️ You already have a payment verification pending with admins."
-      )
-      return ConversationHandler.END
-
-    context.user_data["selected_product"] = product["name"]
-    context.user_data["amount"] = product["price"]
-
-    qr_bio = generate_upi_qr("nagargoje12@ptyes", product["price"])
+    qr_bio = generate_upi_qr(UPI_ID, 50)
     payment_text = (
-        f"✦ <b>𝗣𝗥𝗘𝗠𝗜𝗨𝗠 𝗣𝗔𝗬𝗠𝗘𝗡𝗧</b>\n\n"
-        f"❐ Product: {product['name']}\n"
-        f"❐ Amount: ₹{product['price']}\n"
-        f"❐ Validity: Lifetime\n\n"
+        "✦ <b>𝗣𝗥𝗘𝗠𝗜𝗨𝗠 𝗣𝗔𝗬𝗠𝗘𝗡𝗧</b>\n\n"
+        "📦 Product: DESI GROUP\n"
+        "❐ Amount: ₹50\n"
+        "❐ Validity: Lifetime\n\n"
         "────────────────────\n\n"
         "❐ <b>PAYMENT METHODS</b>\n\n"
         "Paytm • GPay • PhonePe • UPI\n\n"
         "UPI ID:\n"
-        "<b>nagargoje12@ptyes</b>\n\n"
+        f"<b>{UPI_ID}</b>\n\n"
         "<b>AFTER PAYMENT:</b>\n"
         "Send payment screenshot in this chat."
     )
 
     keyboard = [
-        [InlineKeyboardButton("🔙 Back", callback_data="buy_menu")]
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
     ]
 
     await query.message.delete()
     await query.message.reply_photo(
-    photo=qr_bio,
-    caption=payment_text,
-    reply_markup=InlineKeyboardMarkup(keyboard),
-    parse_mode=ParseMode.HTML,
-)
+        photo=BufferedInputFile(qr_bio.read(), filename="qr.png"),
+        caption=payment_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.HTML,
+    )
     return WAITING_FOR_SCREENSHOT
 
   elif query.data == "how":
@@ -326,16 +263,14 @@ async def receive_screenshot(
     )
     return ConversationHandler.END
 
-  product_name = context.user_data.get("selected_product", "Premium Access")
-  amount = context.user_data.get("amount", 50)
   photo_id = update.message.photo[-1].file_id
   username = f"@{user.username}" if user.username else "No Username"
 
   purchase_doc = {
       "user_id": user.id,
       "username": username,
-      "product": product_name,
-      "amount": amount,
+      "product": "DESI GROUP",
+      "amount": 50,
       "status": "pending",
       "date": update.message.date,
   }
@@ -358,8 +293,8 @@ async def receive_screenshot(
       f"🔔 <b>New Payment Verification Request!</b>\n\n"
       f"👤 User ID: <code>{user.id}</code>\n"
       f"🔗 Username: {username}\n"
-      f"📦 Product: {product_name}\n"
-      f"💰 Amount: ₹{amount}\n\n"
+      f"📦 Product: DESI GROUP\n"
+      f"💰 Amount: ₹50\n\n"
       f"Please check the screenshot below:"
   )
 
@@ -404,12 +339,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
       pass
     return
 
-  product_name = purchase.get("product", "Premium Access")
-  prod_doc = await products_col.find_one({"name": product_name})
-  channel_link = (
-      prod_doc["link"] if prod_doc else "https://t.me/+H_y0MBr_c0g2ZDk1"
-  )
-
   admin_name = query.from_user.first_name or "Admin"
 
   if action == "approve":
@@ -423,7 +352,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Hi 👋\n\n"
         "Thank you for your payment 💖\n\n"
         "🔗 Your private channel link 👇\n"
-        f"{channel_link}\n\n"
+        f"{DESI_GROUP_LINK}\n\n"
         "If you face any issue, feel free to message me anytime 😊\n\n"
         "👉 @Vidsell6\n\n"
         "🙏 Thanks for trusting us!"
@@ -537,7 +466,7 @@ def main():
       entry_points=[
           CallbackQueryHandler(
               button_router,
-              pattern="^(buy_menu|how|main_menu|admin_broadcast|admin_stats|select_prod_.+)$",
+              pattern="^(buy|how|main_menu|admin_broadcast|admin_stats)$",
           ),
           CommandHandler("broadcast", broadcast_command),
       ],
@@ -564,8 +493,7 @@ def main():
   )
 
   async def post_init(application: Application):
-    await init_default_products()
-    logger.info("Database initialized & Bot Started...")
+    logger.info("Bot is up and running...")
 
   app.post_init = post_init
   app.run_polling()
