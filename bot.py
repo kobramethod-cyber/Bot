@@ -1,8 +1,10 @@
 import io
 import logging
 import os
+from flask import Flask  # ADDED FOR UPTIMEROBOT
+from threading import Thread  # ADDED FOR UPTIMEROBOT
 from telegram import (
-    InputFile,
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
@@ -63,6 +65,25 @@ db = client["premium_access_hub"]
 users_col = db["users"]
 purchases_col = db["purchases"]
 settings_col = db["settings"]
+
+# ADDED FOR UPTIMEROBOT: Flask app for keep-alive
+app_flask = Flask(__name__)
+
+
+@app_flask.route("/")
+def home():
+  return "Bot is alive!"
+
+
+def run_flask():
+  port = int(os.getenv("PORT", 8080))
+  app_flask.run(host="0.0.0.0", port=port)
+
+
+def keep_alive():
+  t = Thread(target=run_flask)
+  t.daemon = True
+  t.start()
 
 
 def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
@@ -179,7 +200,7 @@ async def button_router(
 
     await query.message.delete()
     await query.message.reply_photo(
-        photo=InputFile(qr_bio, filename="qr.png"),
+        photo=BufferedInputFile(qr_bio.read(), filename="qr.png"),
         caption=payment_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.HTML,
@@ -460,6 +481,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+  keep_alive()  # ADDED FOR UPTIMEROBOT: Start Flask server in background thread
+
   app = Application.builder().token(BOT_TOKEN).build()
 
   conv_handler = ConversationHandler(
