@@ -261,7 +261,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
   elif query.data == "how":
     settings_doc = await settings_col.find_one({"key": "how_to_video"})
     if settings_doc and "file_id" in settings_doc:
-      await query.message.reply_video(video=settings_doc["file_id"])
+      await query.message.reply_video(
+          video=settings_doc["file_id"],
+          caption=(
+              "🎥 How To Buy\n\n"
+              "1️⃣ Click Buy Premium\n\n"
+              "2️⃣ Pay ₹50 via QR/UPI\n\n"
+              "3️⃣ Send Payment Screenshot\n\n"
+              "4️⃣ Wait For Verification\n\n"
+              "5️⃣ Get Instant Premium Access ✅\n\n"
+              "🆘 Support: @Vidsell6"
+          )
+      )
     else:
       await query.message.reply_text("Video will be added by admin later.")
     return ConversationHandler.END
