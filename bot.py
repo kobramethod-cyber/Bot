@@ -302,11 +302,16 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     support_username = await get_setting("support_username")
     settings_doc = await settings_col.find_one({"key": "how_to_video"})
     if settings_doc and "file_id" in settings_doc:
-      await query.message.reply_video(
-          video=settings_doc["file_id"],
-        price = await get_setting("price")
+      price = await get_setting("price")
 
-caption=(
+await query.message.reply_video(
+    video=settings_doc["file_id"],
+    caption=(
+        "🎥 How To Buy\n\n"
+        f"2️⃣ Pay ₹{price} via QR/UPI\n\n"
+        f"🆘 Support: {support_username}"
+    )
+)
     "🎥 How To Buy\n\n"
     "1️⃣ Click Buy Premium\n\n"
     f"2️⃣ Pay ₹{price} via QR/UPI\n\n"
