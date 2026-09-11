@@ -304,15 +304,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if settings_doc and "file_id" in settings_doc:
       await query.message.reply_video(
           video=settings_doc["file_id"],
-          caption=(
-              "🎥 How To Buy\n\n"
-              "1️⃣ Click Buy Premium\n\n"
-              "2️⃣ Pay ₹50 via QR/UPI\n\n"
-              "3️⃣ Send Payment Screenshot\n\n"
-              "4️⃣ Wait For Verification\n\n"
-              "5️⃣ Get Instant Premium Access ✅\n\n"
-              f"🆘 Support: {support_username}"
-          )
+        price = await get_setting("price")
+
+caption=(
+    "🎥 How To Buy\n\n"
+    "1️⃣ Click Buy Premium\n\n"
+    f"2️⃣ Pay ₹{price} via QR/UPI\n\n"
+    "3️⃣ Send Payment Screenshot\n\n"
+    "4️⃣ Wait For Verification\n\n"
+    "5️⃣ Get Instant Premium Access ✅\n\n"
+    f"🆘 Support: {support_username}"
+)
       )
     else:
       await query.message.reply_text("Video will be added by admin later.")
@@ -498,8 +500,14 @@ async def admin_set_price_receive(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
   try:
     new_price = int(update.message.text.strip())
-    await set_setting("price", new_price)
-    await update.message.reply_text(f"✅ Price Updated Successfully to: ₹{new_price}")
+await set_setting("price", new_price)
+
+await products_col.update_one(
+    {"name": "PREMIUM ACCESS"},
+    {"$set": {"price": new_price}}
+)
+
+await update.message.reply_text(f"✅ Price Updated Successfully to: ₹{new_price}")
   except ValueError:
     await update.message.reply_text("⚠️ Invalid price. Please send a valid number.")
   return ConversationHandler.END
@@ -509,8 +517,14 @@ async def admin_set_link_receive(update: Update, context: ContextTypes.DEFAULT_T
   if not await is_admin(update.message.from_user.id):
     return ConversationHandler.END
   new_link = update.message.text.strip()
-  await set_setting("group_link", new_link)
-  await update.message.reply_text("✅ Link Updated Successfully")
+await set_setting("group_link", new_link)
+
+await products_col.update_one(
+    {"name": "PREMIUM ACCESS"},
+    {"$set": {"link": new_link}}
+)
+
+await update.message.reply_text("✅ Link Updated Successfully")
   return ConversationHandler.END
 
 
@@ -561,8 +575,20 @@ async def admin_remove_admin_receive(update: Update, context: ContextTypes.DEFAU
     return ConversationHandler.END
   try:
     rem_admin_id = int(update.message.text.strip())
-    await admins_col.delete_one({"user_id": rem_admin_id})
-    await update.message.reply_text(f"✅ Admin ID {rem_admin_id} removed successfully!")
+
+admin_count = await admins_col.count_documents({})
+
+if admin_count <= 1:
+    await update.message.reply_text(
+        "⚠️ Last admin cannot be removed."
+    )
+    return ConversationHandler.END
+
+await admins_col.delete_one({"user_id": rem_admin_id})
+
+await update.message.reply_text(
+    f"✅ Admin ID {rem_admin_id} removed successfully!"
+)
   except ValueError:
     await update.message.reply_text("⚠️ Invalid User ID. Please send a numeric Telegram User ID.")
   return ConversationHandler.END
@@ -878,7 +904,7 @@ def main():
       entry_points=[
           CallbackQueryHandler(
               button_router,
-              pattern="^(buy|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|set_link|set_welcome|set_howto_menu|set_support|view_admins|add_admin|remove_admin|view_products|add_product|edit_product_menu|remove_product_menu|editprod_|edit_pfield_|remprod_)$",
+              pattern="^(buy|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|set_link|set_welcome|set_howto_menu|set_support|view_admins|add_admin|remove_admin|view_products|add_product|edit_product_menu|remove_product_menu|editprod_.*|edit_pfield_.*|remprod_.*)$"
           ),
           CommandHandler("broadcast", broadcast_command),
           CommandHandler("admin", admin_command),
