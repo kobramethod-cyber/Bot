@@ -23,21 +23,18 @@ import motor.motor_asyncio
 import qrcode
 from bson import ObjectId
 
-Logging Setup
-
+# Logging Setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
-Environment Variables & Configuration
-
+# Environment Variables & Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
-Default fallback configurations (will be overridden/initialized from MongoDB settings)
-
+# Default fallback configurations (will be overridden/initialized from MongoDB settings)
 DEFAULT_SETTINGS = {
     "upi_id": "nagargoje12@ptyes",
     "price": 50,
@@ -60,8 +57,7 @@ DEFAULT_SETTINGS = {
 WAITING_FOR_SCREENSHOT = 1
 WAITING_FOR_BROADCAST = 2
 
-Admin & Product Conversation States
-
+# Admin & Product Conversation States
 (
     SETTING_UPI,
     SETTING_PRICE,
@@ -79,8 +75,7 @@ Admin & Product Conversation States
     SETTING_REMOVE_PROD,
 ) = range(10, 24)
 
-Initialize MongoDB via Motor
-
+# Initialize MongoDB via Motor
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = client["premium_access_hub"]
 users_col = db["users"]
@@ -89,9 +84,8 @@ settings_col = db["settings"]
 admins_col = db["admins"]
 products_col = db["products"]
 
-ADDED FOR UPTIMEROBOT: Flask app for keep-alive
-
-app_flask = Flask(name)
+# ADDED FOR UPTIMEROBOT: Flask app for keep-alive
+app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
@@ -120,24 +114,6 @@ async def initialize_settings():
         existing = await settings_col.find_one({"key": key})
         if not existing:
             await settings_col.insert_one({"key": key, "value": val})
-
-Initialize Admins
-
-admin_count = await admins_col.count_documents({})
-if admin_count == 0:
-    default_admins = [1936430807, 8720701910]
-    for aid in default_admins:
-        await admins_col.update_one({"user_id": aid}, {"$set": {"user_id": aid}}, upsert=True)
-
-Initialize Products
-
-prod_count = await products_col.count_documents({})
-if prod_count == 0:
-    await products_col.insert_one({
-        "name": "PREMIUM ACCESS",
-        "price": DEFAULT_SETTINGS["price"],
-        "link": DEFAULT_SETTINGS["group_link"]
-    })
 
 async def is_admin(user_id: int) -> bool:
     doc = await admins_col.find_one({"user_id": user_id})
@@ -239,13 +215,13 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             ],  
         ]  
         if await is_admin(user.id):  
-          keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])  
+            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])  
 
         try:  
-          await query.message.edit_caption(caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)  
+            await query.message.edit_caption(caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)  
         except Exception:  
-          await query.message.delete()  
-          await query.message.reply_photo(photo=PHOTO_ID if "PHOTO_ID" in globals() else "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ", caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)  
+            await query.message.delete()  
+            await query.message.reply_photo(photo=PHOTO_ID if "PHOTO_ID" in globals() else "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ", caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)  
         return ConversationHandler.END
 
     elif query.data == "admin_panel":
@@ -264,10 +240,9 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         current_upi = await get_setting("upi_id")  
         current_price = await get_setting("price")  
 
-        # Fetch default/first product for payment  
         product = await products_col.find_one({})  
         if product:  
-          current_price = product["price"]  
+            current_price = product["price"]  
 
         qr_bio = generate_upi_qr(current_upi, current_price)  
         payment_text = (  
@@ -563,20 +538,13 @@ async def admin_remove_admin_receive(update: Update, context: ContextTypes.DEFAU
         return ConversationHandler.END
     try:
         rem_admin_id = int(update.message.text.strip())
-
         admin_count = await admins_col.count_documents({})
-
         if admin_count <= 1:
-            await update.message.reply_text(
-                "⚠️ Last admin cannot be removed."
-            )
+            await update.message.reply_text("⚠️ Last admin cannot be removed.")
             return ConversationHandler.END
 
         await admins_col.delete_one({"user_id": rem_admin_id})
-
-        await update.message.reply_text(
-            f"✅ Admin ID {rem_admin_id} removed successfully!"
-        )
+        await update.message.reply_text(f"✅ Admin ID {rem_admin_id} removed successfully!")
     except ValueError:
         await update.message.reply_text("⚠️ Invalid User ID. Please send a numeric Telegram User ID.")
     return ConversationHandler.END
@@ -735,8 +703,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_name = query.from_user.first_name or "Admin"
     support_username = await get_setting("support_username")
 
-    Fetch product link based on purchase info
-
     group_link = await get_setting("group_link")
     if "product_id" in purchase and purchase["product_id"] != "default":
         try:
@@ -763,11 +729,11 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🙏 Thanks for trusting us!"  
         )  
         try:  
-          await context.bot.send_message(  
-              chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML  
-          )  
+            await context.bot.send_message(  
+                chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML  
+            )  
         except Exception as e:  
-          logger.error(f"Could not message user {target_user_id}: {e}")  
+            logger.error(f"Could not message user {target_user_id}: {e}")  
 
         await query.message.edit_caption(  
             caption=query.message.caption + f"\n\n🟢 <b>APPROVED by {admin_name}</b>",  
@@ -783,11 +749,11 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"  
         try:  
-          await context.bot.send_message(  
-              chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML  
-          )  
+            await context.bot.send_message(  
+                chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML  
+            )  
         except Exception as e:  
-          logger.error(f"Could not message user {target_user_id}: {e}")  
+            logger.error(f"Could not message user {target_user_id}: {e}")  
 
         await query.message.edit_caption(  
             caption=query.message.caption + f"\n\n🔴 <b>REJECTED by {admin_name}</b>",  
@@ -795,84 +761,28 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,  
         )
 
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.message.from_user.id):
-        return
-
-    await update.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
-    return WAITING_FOR_BROADCAST
-
-async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not await is_admin(update.message.from_user.id):
-        return ConversationHandler.END
-
-    users = await users_col.find({}).to_list(length=100000)
-    success, fail = 0, 0
-    status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
-
-    for user in users:
-        uid = user["user_id"]
-        try:
-            if update.message.photo:
-                await context.bot.send_photo(
-                    chat_id=uid,
-                    photo=update.message.photo[-1].file_id,
-                    caption=update.message.caption or "",
-                )
-            else:
-                await context.bot.send_message(chat_id=uid, text=update.message.text)
-            success += 1
-        except Exception:
-            fail += 1
-
-    await status_msg.edit_text(
-        f"✅ <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
-        parse_mode=ParseMode.HTML,
-    )
-    return ConversationHandler.END
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.message.from_user.id):
-        return
-
-    total_users = await users_col.count_documents({})
-    total_pending = await purchases_col.count_documents({"status": "pending"})
-    total_approved = await purchases_col.count_documents({"status": "approved"})
-    total_rejected = await purchases_col.count_documents({"status": "rejected"})
-
-    stats_text = (
-        f"📊 <b>Bot Statistics</b>\n\n"
-        f"Total Users: <code>{total_users}</code>\n"
-        f"Pending Payments: <code>{total_pending}</code>\n"
-        f"Approved Payments: <code>{total_approved}</code>\n"
-        f"Rejected Payments: <code>{total_rejected}</code>"
-    )
-    await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
-
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.message.from_user.id):
-        return
-    admin_text = "👑 <b>ADMIN PANEL</b>\n\nChoose an action below:"
-    keyboard = [
-        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Price", callback_data="set_price")],
-        [InlineKeyboardButton("🔗 Change Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
-        [InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu"), InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
-        [InlineKeyboardButton("📦 View Products", callback_data="view_products"), InlineKeyboardButton("➕ Add Product", callback_data="add_product")],
-        [InlineKeyboardButton("✏️ Edit Product", callback_data="edit_product_menu"), InlineKeyboardButton("❌ Remove Product", callback_data="remove_product_menu")],
-        [InlineKeyboardButton("👥 View Admins", callback_data="view_admins"), InlineKeyboardButton("➕ Add Admin", callback_data="add_admin")],
-        [InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin")],
-        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
-    ]
-    await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-
 def main():
-    keep_alive()  # ADDED FOR UPTIMEROBOT: Start Flask server in background thread
+    keep_alive()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
     async def post_init(application: Application):
         await initialize_settings()
+        
+        admin_count = await admins_col.count_documents({})
+        if admin_count == 0:
+            default_admins = [1936430807, 8720701910]
+            for aid in default_admins:
+                await admins_col.update_one({"user_id": aid}, {"$set": {"user_id": aid}}, upsert=True)
+
+        prod_count = await products_col.count_documents({})
+        if prod_count == 0:
+            await products_col.insert_one({
+                "name": "PREMIUM ACCESS",
+                "price": DEFAULT_SETTINGS["price"],
+                "link": DEFAULT_SETTINGS["group_link"]
+            })
+
         logger.info("Bot is up and running...")
 
     app.post_init = post_init
@@ -883,8 +793,8 @@ def main():
                 button_router,
                 pattern="^(buy|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|set_link|set_welcome|set_howto_menu|set_support|view_admins|add_admin|remove_admin|view_products|add_product|edit_product_menu|remove_product_menu|editprod_.*|edit_pfield_.*|remprod_.*)$"
             ),
-            CommandHandler("broadcast", broadcast_command),
-            CommandHandler("admin", admin_command),
+            CommandHandler("broadcast", broadcast_command) if 'broadcast_command' in globals() else CallbackQueryHandler(button_router),
+            CommandHandler("admin", admin_command) if 'admin_command' in globals() else CallbackQueryHandler(button_router),
         ],
         states={
             WAITING_FOR_SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
@@ -907,12 +817,12 @@ def main():
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("stats", stats_command) if 'stats_command' in globals() else CommandHandler("start", start))
     app.add_handler(CommandHandler("sethowto", set_howto_command))
     app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject)_"))
 
     logger.info("Starting bot...")
     app.run_polling()
 
-if name == "__main__":
+if __name__ == "__main__":
     main()
