@@ -32,10 +32,8 @@ logger = logging.getLogger(__name__)
 # Environment Variables & Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-# Initial default hardcoded admins; dynamic admin management stored in DB can be added if needed
 INITIAL_ADMIN_IDS = [1936430807, 8720701910]
 
-# Default fallback configurations
 DEFAULT_SETTINGS = {
     "upi_id": "nagargoje12@ptyes",
     "price": 50,
@@ -128,11 +126,9 @@ async def initialize_settings():
     if not existing:
       await settings_col.insert_one({"key": key, "value": val})
   
-  # Ensure initial admins exist in collection
   for admin_id in INITIAL_ADMIN_IDS:
     await admins_col.update_one({"user_id": admin_id}, {"$set": {"user_id": admin_id}}, upsert=True)
 
-  # Check if a default product exists; if not, create one from current settings for backward compatibility
   default_prod = await products_col.find_one({"product_id": "default"})
   if not default_prod:
     price = await get_setting("price")
@@ -182,14 +178,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   start_text = welcome_template.format(price=price)
 
   keyboard = []
-  # Fetch all products to display buy buttons dynamically
   products = await products_col.find({}).to_list(length=100)
   if products:
     for prod in products:
       p_id = prod.get("product_id", "default")
       p_name = prod.get("name", "Premium Access")
-      p_price = prod.get("price", price)
-      keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name} (₹{p_price})", callback_data=f"buy_{p_id}")])
+      # Price removed from button text as requested
+      keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
   else:
     keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
@@ -249,8 +244,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
       for prod in products:
         p_id = prod.get("product_id", "default")
         p_name = prod.get("name", "Premium Access")
-        p_price = prod.get("price", price)
-        keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name} (₹{p_price})", callback_data=f"buy_{p_id}")])
+        keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
     else:
       keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
@@ -305,7 +299,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         "Send payment screenshot in this chat."
     )
 
-    # Store selected product in context for when the screenshot arrives
     context.user_data["selected_product_id"] = prod_id
     context.user_data["selected_product_name"] = prod_name
     context.user_data["selected_product_price"] = current_price
@@ -434,7 +427,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     kb = []
     for p in products:
-      kb.append([InlineKeyboardButton(f"❌ {p.get('name')} (₹{p.get('price')})", callback_data=f"delprod_{p.get('product_id')}")])
+      kb.append([InlineKeyboardButton(f"❌ {p.get('name')}", callback_data=f"delprod_{p.get('product_id')}")])
     kb.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
     await query.message.edit_caption(caption="🗑️ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
     return ConversationHandler.END
@@ -717,7 +710,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
       f"Please check the screenshot below:"
   )
 
-  # Broadcast forward to all active admins
   all_admins = INITIAL_ADMIN_IDS.copy()
   async for adm in admins_col.find({}):
     if adm["user_id"] not in all_admins:
@@ -762,7 +754,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
   admin_name = query.from_user.first_name or "Admin"
   support_username = await get_setting("support_username")
 
-  # Retrieve specific product link if available, fallback to global group link
   prod_id = purchase.get("product_id", "default")
   product = await products_col.find_one({"product_id": prod_id})
   if product and product.get("group_link"):
@@ -905,17 +896,16 @@ def main():
 
   app.post_init = post_init
 
+  callback_pattern = (
+      "^(buy_.*|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|"
+      "set_link|set_welcome|set_howto_menu|set_support|add_admin_menu|remove_admin_menu|"
+      "add_product_menu|remove_product_menu|manage_products_menu|delprod_.*|editprod_.*|"
+      "epname_.*|epprice_.*|eplink_.*)$"
+  )
+
   conv_handler = ConversationHandler(
       entry_points=[
-          CallbackQueryHandler(
-              button_router,
-              pattern=(
-                  "^(buy_.*|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|"
-                  "set_link|set_welcome|set_howto_menu|set_support|add_admin_menu|remove_admin_menu|"
-                  "add_product_menu|remove_product_menu|manage_products_menu|delprod_.*|editprod_.*|"
-                  "epname_.*|epprice_.*|eplink_.*)$"
-              ),
-          ),
+          CallbackQueryHandler(button_router, pattern=callback_pattern),
           CommandHandler("broadcast", broadcast_command),
           CommandHandler("admin", admin_command),
       ],
@@ -926,7 +916,7 @@ def main():
           ],
           SETTING_UPI: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_upi_receive)],
           SETTING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_price_receive)],
-          SETTING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_link_revision if 'admin_set_link_revision' in globals() else admin_set_link_receive)],
+          SETTING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_link_receive)],
           SETTING_WELCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_welcome_receive)],
           SETTING_HOWTO: [MessageHandler(filters.VIDEO, admin_set_howto_receive)],
           SETTING_SUPPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_support_receive)],
@@ -937,7 +927,10 @@ def main():
           EDITING_PRODUCT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_product_price_receive)],
           EDITING_PRODUCT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_product_link_receive)],
       },
-      fallbacks=[CommandHandler("start", start)],
+      fallbacks=[
+          CommandHandler("start", start),
+          CallbackQueryHandler(button_router, pattern=callback_pattern),
+      ],
   )
 
   app.add_handler(CommandHandler("start", start))
