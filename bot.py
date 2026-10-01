@@ -51,6 +51,7 @@ DEFAULT_SETTINGS = {
         "✨ One-time payment, enjoy forever!"
     ),
     "support_username": "@Vidsell6",
+    "start_photo_id": "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ",
 }
 
 WAITING_FOR_SCREENSHOT = 1
@@ -64,6 +65,7 @@ WAITING_FOR_BROADCAST = 2
     SETTING_WELCOME,
     SETTING_HOWTO,
     SETTING_SUPPORT,
+    SETTING_PHOTO,
     ADDING_ADMIN,
     REMOVING_ADMIN,
     ADDING_PRODUCT,
@@ -71,7 +73,7 @@ WAITING_FOR_BROADCAST = 2
     EDITING_PRODUCT_NAME,
     EDITING_PRODUCT_PRICE,
     EDITING_PRODUCT_LINK,
-) = range(10, 23)
+) = range(10, 24)
 
 # Initialize MongoDB via Motor
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -175,6 +177,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   price = await get_setting("price")
   welcome_template = await get_setting("welcome_text")
   support_username = await get_setting("support_username")
+  start_photo_id = await get_setting("start_photo_id")
   start_text = welcome_template.format(price=price)
 
   keyboard = []
@@ -183,7 +186,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for prod in products:
       p_id = prod.get("product_id", "default")
       p_name = prod.get("name", "Premium Access")
-      # Price removed from button text as requested
       keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
   else:
     keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
@@ -197,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
   await update.message.reply_photo(
-      photo=PHOTO_ID if "PHOTO_ID" in globals() else "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ",
+      photo=start_photo_id,
       caption=start_text,
       reply_markup=InlineKeyboardMarkup(keyboard),
   )
@@ -217,10 +219,10 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
       [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
       [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
       [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
-      [InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu"), InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
-      [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
-      [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
-      [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+      [InlineKeyboardButton("🖼️ Change Start Photo", callback_data="set_photo"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+      [InlineKeyboardButton("🆘 Change Support", callback_data="set_support"), InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu")],
+      [InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu"), InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu")],
+      [InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu"), InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
       [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
   ]
 
@@ -236,6 +238,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     price = await get_setting("price")
     welcome_template = await get_setting("welcome_text")
     support_username = await get_setting("support_username")
+    start_photo_id = await get_setting("start_photo_id")
     start_text = welcome_template.format(price=price)
 
     keyboard = []
@@ -259,7 +262,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
       await query.message.edit_caption(caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     except Exception:
       await query.message.delete()
-      await query.message.reply_photo(photo=PHOTO_ID if "PHOTO_ID" in globals() else "AgACAgUAAxkBAAICYGqawsPSsd-rVZF8QNyGGavXiRnYAAJ0FGsbNXDQVB25ko4WD9yEAQADAgADeAADPQQ", caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+      await query.message.reply_photo(photo=start_photo_id, caption=start_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     return ConversationHandler.END
 
   elif query.data == "admin_panel":
@@ -386,6 +389,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
       return ConversationHandler.END
     await query.message.reply_text("📝 Send the new Welcome Message template (use {price} for price dynamic tag):")
     return SETTING_WELCOME
+
+  elif query.data == "set_photo":
+    if not await is_admin(user.id):
+      return ConversationHandler.END
+    await query.message.reply_text("🖼️ Send the new photo you want to display for the /start command:")
+    return SETTING_PHOTO
 
   elif query.data == "set_howto_menu":
     if not await is_admin(user.id):
@@ -531,6 +540,18 @@ async def admin_set_welcome_receive(update: Update, context: ContextTypes.DEFAUL
   new_welcome = update.message.text.strip()
   await set_setting("welcome_text", new_welcome)
   await update.message.reply_text("✅ Welcome Message Updated Successfully")
+  return ConversationHandler.END
+
+
+async def admin_set_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  if not await is_admin(update.message.from_user.id):
+    return ConversationHandler.END
+  if not update.message.photo:
+    await update.message.reply_text("⚠️ Please send a valid photo image.")
+    return SETTING_PHOTO
+  photo_id = update.message.photo[-1].file_id
+  await set_setting("start_photo_id", photo_id)
+  await update.message.reply_text("✅ Start Photo Updated Successfully!")
   return ConversationHandler.END
 
 
@@ -876,10 +897,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
       [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
       [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
       [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
-      [InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu"), InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
-      [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
-      [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
-      [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+      [InlineKeyboardButton("🖼️ Change Start Photo", callback_data="set_photo"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+      [InlineKeyboardButton("🆘 Change Support", callback_data="set_support"), InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu")],
+      [InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu"), InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu")],
+      [InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu"), InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
       [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
   ]
   await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -898,7 +919,7 @@ def main():
 
   callback_pattern = (
       "^(buy_.*|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|"
-      "set_link|set_welcome|set_howto_menu|set_support|add_admin_menu|remove_admin_menu|"
+      "set_link|set_welcome|set_photo|set_howto_menu|set_support|add_admin_menu|remove_admin_menu|"
       "add_product_menu|remove_product_menu|manage_products_menu|delprod_.*|editprod_.*|"
       "epname_.*|epprice_.*|eplink_.*)$"
   )
@@ -918,6 +939,7 @@ def main():
           SETTING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_price_receive)],
           SETTING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_link_receive)],
           SETTING_WELCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_welcome_receive)],
+          SETTING_PHOTO: [MessageHandler(filters.PHOTO, admin_set_photo_receive)],
           SETTING_HOWTO: [MessageHandler(filters.VIDEO, admin_set_howto_receive)],
           SETTING_SUPPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_support_receive)],
           ADDING_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_receive)],
