@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import io
 import logging
 import os
@@ -39,16 +40,16 @@ DEFAULT_SETTINGS = {
     "price": 50,
     "group_link": "https://t.me/+H_y0MBr_c0g2ZDk1",
     "welcome_text": (
-        "âœ¨ Welcome to Premium Access Hub âœ¨\n\n"
-        "ðŸ”¥ Buy Premium Groups in just â‚¹{price}!\n\n"
-        "ðŸ“‚ Resources:\n"
+        "✨ Welcome to Premium Access Hub ✨\n\n"
+        "🔥 Buy Premium Groups in just ₹{price}!\n\n"
+        "📂 Resources:\n"
         "https://t.me/+h7qBjBXj13djMWI1\n"
         "https://t.me/+bxjfe4zWwqQ4ZjY0\n\n"
-        "ðŸ’Ž Features:\n"
-        "â€¢ â™¾ï¸ Lifetime Permanent Access\n"
-        "â€¢ ðŸ“ All Premium Categories included\n"
-        "â€¢ ðŸš€ Instant delivery after verification\n\n"
-        "âœ¨ One-time payment, enjoy forever!"
+        "💎 Features:\n"
+        "• ♾️ Lifetime Permanent Access\n"
+        "• 📁 All Premium Categories included\n"
+        "• 🚀 Instant delivery after verification\n\n"
+        "✨ One-time payment, enjoy forever!"
     ),
     "support_username": "@Vidsell6",
 }
@@ -184,17 +185,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for prod in products:
             p_id = prod.get("product_id", "default")
             p_name = prod.get("name", "Premium Access")
-            keyboard.append([InlineKeyboardButton(f"ðŸ›’ Buy {p_name}", callback_data=f"buy_{p_id}")])
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
     else:
-        keyboard.append([InlineKeyboardButton("ðŸ›’ Buy Premium", callback_data="buy_default")])
+        keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
     keyboard.append([
-        InlineKeyboardButton("â“ How To Buy", callback_data="how"),
-        InlineKeyboardButton("ðŸ†˜ Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
+        InlineKeyboardButton("❓ How To Buy", callback_data="how"),
+        InlineKeyboardButton("🆘 Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
     ])
 
     if await is_admin(user.id):
-        keyboard.append([InlineKeyboardButton("ðŸ‘‘ Admin Panel", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
     start_photo_doc = await settings_col.find_one({"key": "start_photo"})
     if start_photo_doc and "file_id" in start_photo_doc:
@@ -223,17 +224,17 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Unauthorized!", show_alert=True)
         return
 
-    admin_text = "ðŸ‘‘ <b>ADMIN PANEL</b>\n\nChoose an action below:"
+    admin_text = "👑 <b>ADMIN PANEL</b>\n\nChoose an action below:"
     keyboard = [
-        [InlineKeyboardButton("ðŸ“Š Stats", callback_data="admin_stats"), InlineKeyboardButton("ðŸ“¢ Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("ðŸ’³ Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("ðŸ’° Change Global Price", callback_data="set_price")],
-        [InlineKeyboardButton("ðŸ”— Change Global Link", callback_data="set_link"), InlineKeyboardButton("ðŸ“ Change Welcome", callback_data="set_welcome")],
-        [InlineKeyboardButton("ðŸ–¼ Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("ðŸŽ¥ Change HowTo Video", callback_data="set_howto_menu")],
-        [InlineKeyboardButton("ðŸ†˜ Change Support", callback_data="set_support")],
-        [InlineKeyboardButton("âž• Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("âž– Remove Admin", callback_data="remove_admin_menu")],
-        [InlineKeyboardButton("ðŸ“¦ Add Product", callback_data="add_product_menu"), InlineKeyboardButton("ðŸ—‘ï¸ Remove Product", callback_data="remove_product_menu")],
-        [InlineKeyboardButton("âœï¸ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="main_menu")],
+        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
+        [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
+        [InlineKeyboardButton("🖼 Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+        [InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
+        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
+        [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
 
     if query.message.photo:
@@ -259,16 +260,16 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             for prod in products:
                 p_id = prod.get("product_id", "default")
                 p_name = prod.get("name", "Premium Access")
-                keyboard.append([InlineKeyboardButton(f"ðŸ›’ Buy {p_name}", callback_data=f"buy_{p_id}")])
+                keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
         else:
-            keyboard.append([InlineKeyboardButton("ðŸ›’ Buy Premium", callback_data="buy_default")])
+            keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
         keyboard.append([
-            InlineKeyboardButton("â“ How To Buy", callback_data="how"),
-            InlineKeyboardButton("ðŸ†˜ Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
+            InlineKeyboardButton("❓ How To Buy", callback_data="how"),
+            InlineKeyboardButton("🆘 Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
         ])
         if await is_admin(user.id):
-            keyboard.append([InlineKeyboardButton("ðŸ‘‘ Admin Panel", callback_data="admin_panel")])
+            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
         start_photo_doc = await settings_col.find_one({"key": "start_photo"})
         photo_file_id = start_photo_doc.get("file_id") if start_photo_doc else None
@@ -324,18 +325,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("âš ï¸ You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
         payment_text = (
-            "âœ¦ <b>ð—£ð—¥ð—˜ð— ð—œð—¨ð—  ð—£ð—”ð—¬ð— ð—˜ð—¡ð—§</b>\n\n"
-            f"ðŸ“¦ Product: {prod_name}\n"
-            f"â Amount: â‚¹{current_price}\n"
-            "â Validity: Lifetime\n\n"
-            "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n\n"
-            "â <b>PAYMENT METHODS</b>\n\n"
-            "Paytm â€¢ GPay â€¢ PhonePe â€¢ UPI\n\n"
+            "✦ <b>PREMIUM PAYMENT</b>\n\n"
+            f"📦 Product: {prod_name}\n"
+            f"🔹 Amount: ₹{current_price}\n"
+            "🔹 Validity: Lifetime\n\n"
+            "───────────────────\n\n"
+            "🔹 <b>PAYMENT METHODS</b>\n\n"
+            "Paytm • GPay • PhonePe • UPI\n\n"
             "UPI ID:\n"
             f"<b>{current_upi}</b>\n\n"
             "<b>AFTER PAYMENT:</b>\n"
@@ -346,7 +347,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data["selected_product_name"] = prod_name
         context.user_data["selected_product_price"] = current_price
 
-        keyboard = [[InlineKeyboardButton("ðŸ”™ Back", callback_data="main_menu")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
 
         await query.message.delete()
         await query.message.reply_photo(
@@ -364,13 +365,13 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.message.reply_video(
                 video=settings_doc["file_id"],
                 caption=(
-                    "ðŸŽ¥ How To Buy\n\n"
-                    "1ï¸âƒ£ Click Buy Premium\n\n"
-                    "2ï¸âƒ£ Pay via QR/UPI\n\n"
-                    "3ï¸âƒ£ Send Payment Screenshot\n\n"
-                    "4ï¸âƒ£ Wait For Verification\n\n"
-                    "5ï¸âƒ£ Get Instant Premium Access âœ…\n\n"
-                    f"ðŸ†˜ Support: {support_username}"
+                    "🎥 How To Buy\n\n"
+                    "1️⃣ Click Buy Premium\n\n"
+                    "2️⃣ Pay via QR/UPI\n\n"
+                    "3️⃣ Send Payment Screenshot\n\n"
+                    "4️⃣ Wait For Verification\n\n"
+                    "5️⃣ Get Instant Premium Access ✅\n\n"
+                    f"🆘 Support: {support_username}"
                 )
             )
         else:
@@ -388,13 +389,13 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         total_rejected = await purchases_col.count_documents({"status": "rejected"})
 
         stats_text = (
-            f"ðŸ“Š <b>Bot Statistics</b>\n\n"
+            f"📊 <b>Bot Statistics</b>\n\n"
             f"Total Users: <code>{total_users}</code>\n"
             f"Pending Payments: <code>{total_pending}</code>\n"
             f"Approved Payments: <code>{total_approved}</code>\n"
             f"Rejected Payments: <code>{total_rejected}</code>"
         )
-        keyboard = [[InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]]
         if query.message.photo:
             await query.message.edit_caption(caption=stats_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
         else:
@@ -406,67 +407,67 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        await query.message.reply_text("ðŸ“¢ Send the text or photo you want to broadcast to all users:")
+        await query.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
         return WAITING_FOR_BROADCAST
 
     elif query.data == "set_upi":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ’³ Send the new UPI ID:")
+        await query.message.reply_text("💳 Send the new UPI ID:")
         return SETTING_UPI
 
     elif query.data == "set_price":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ’° Send the new Global Price (numeric value only):")
+        await query.message.reply_text("💰 Send the new Global Price (numeric value only):")
         return SETTING_PRICE
 
     elif query.data == "set_link":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ”— Send the new Global Premium Group Link:")
+        await query.message.reply_text("🔗 Send the new Global Premium Group Link:")
         return SETTING_LINK
 
     elif query.data == "set_welcome":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ“ Send the new Welcome Message template (use {price} for price dynamic tag):")
+        await query.message.reply_text("📝 Send the new Welcome Message template (use {price} for price dynamic tag):")
         return SETTING_WELCOME
 
     elif query.data == "set_start_photo_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ–¼ Please send the new photo for the start menu:")
+        await query.message.reply_text("🖼 Please send the new photo for the start menu:")
         return SETTING_START_PHOTO
 
     elif query.data == "set_howto_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸŽ¥ Send the video file with command /sethowto or reply here with the video.")
+        await query.message.reply_text("🎥 Send the video file with command /sethowto or reply here with the video.")
         return SETTING_HOWTO
 
     elif query.data == "set_support":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ†˜ Send the new Support Username (e.g., @Vidsell6). This will update everywhere instantly:")
+        await query.message.reply_text("🆘 Send the new Support Username (e.g., @Vidsell6). This will update everywhere instantly:")
         return SETTING_SUPPORT
 
     elif query.data == "add_admin_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("âž• Send the Telegram User ID of the new admin:")
+        await query.message.reply_text("➕ Send the Telegram User ID of the new admin:")
         return ADDING_ADMIN
 
     elif query.data == "remove_admin_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("âž– Send the Telegram User ID of the admin to remove:")
+        await query.message.reply_text("➖ Send the Telegram User ID of the admin to remove:")
         return REMOVING_ADMIN
 
     elif query.data == "add_product_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ“¦ Send product details in this format:\n`Product Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("📦 Send product details in this format:\n`Product Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
         return ADDING_PRODUCT
 
     elif query.data == "remove_product_menu":
@@ -474,17 +475,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         products = await products_col.find({}).to_list(length=100)
         if not products:
-            await query.message.reply_text("âš ï¸ No products available to remove.")
+            await query.message.reply_text("⚠️ No products available to remove.")
             return ConversationHandler.END
         
         kb = []
         for p in products:
-            kb.append([InlineKeyboardButton(f"âŒ {p.get('name')}", callback_data=f"delprod_{p.get('product_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")])
+            kb.append([InlineKeyboardButton(f"❌ {p.get('name')}", callback_data=f"delprod_{p.get('product_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
         if query.message.photo:
-            await query.message.edit_caption(caption="ðŸ—‘ï¸ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption="🗑️ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text="ðŸ—‘ï¸ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text="🗑️ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("delprod_"):
@@ -492,11 +493,11 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         await products_col.delete_one({"product_id": p_id})
-        kb = [[InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")]]
+        kb = [[InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]]
         if query.message.photo:
-            await query.message.edit_caption(caption="âœ… Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_caption(caption="✅ Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         else:
-            await query.message.edit_text(text="âœ… Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(text="✅ Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     elif query.data == "manage_products_menu":
@@ -504,17 +505,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         products = await products_col.find({}).to_list(length=100)
         if not products:
-            await query.message.reply_text("âš ï¸ No products available to edit.")
+            await query.message.reply_text("⚠️ No products available to edit.")
             return ConversationHandler.END
         
         kb = []
         for p in products:
-            kb.append([InlineKeyboardButton(f"âœï¸ {p.get('name')}", callback_data=f"editprod_{p.get('product_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")])
+            kb.append([InlineKeyboardButton(f"✏️ {p.get('name')}", callback_data=f"editprod_{p.get('product_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
         if query.message.photo:
-            await query.message.edit_caption(caption="âœï¸ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption="✏️ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text="âœï¸ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text="✏️ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("editprod_"):
@@ -523,14 +524,14 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
         kb = [
-            [InlineKeyboardButton("ðŸ“ Change Name", callback_data=f"epname_{p_id}"), InlineKeyboardButton("ðŸ’° Change Price", callback_data=f"epprice_{p_id}")],
-            [InlineKeyboardButton("ðŸ”— Change Link", callback_data=f"eplink_{p_id}")],
-            [InlineKeyboardButton("ðŸ”™ Back", callback_data="manage_products_menu")]
+            [InlineKeyboardButton("📝 Change Name", callback_data=f"epname_{p_id}"), InlineKeyboardButton("💰 Change Price", callback_data=f"epprice_{p_id}")],
+            [InlineKeyboardButton("🔗 Change Link", callback_data=f"eplink_{p_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="manage_products_menu")]
         ]
         if query.message.photo:
-            await query.message.edit_caption(caption=f"âœï¸ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption=f"✏️ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text=f"âœï¸ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text=f"✏️ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("epname_"):
@@ -538,7 +539,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ“ Send the new name for this product:")
+        await query.message.reply_text("📝 Send the new name for this product:")
         return EDITING_PRODUCT_NAME
 
     elif query.data.startswith("epprice_"):
@@ -546,7 +547,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ’° Send the new numeric price for this product:")
+        await query.message.reply_text("💰 Send the new numeric price for this product:")
         return EDITING_PRODUCT_PRICE
 
     elif query.data.startswith("eplink_"):
@@ -554,7 +555,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ”— Send the new group link for this product:")
+        await query.message.reply_text("🔗 Send the new group link for this product:")
         return EDITING_PRODUCT_LINK
 
     return ConversationHandler.END
@@ -565,7 +566,7 @@ async def admin_set_upi_receive(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     new_upi = update.message.text.strip()
     await set_setting("upi_id", new_upi)
-    await update.message.reply_text(f"âœ… UPI Updated Successfully to: {new_upi}")
+    await update.message.reply_text(f"✅ UPI Updated Successfully to: {new_upi}")
     return ConversationHandler.END
 
 
@@ -575,9 +576,9 @@ async def admin_set_price_receive(update: Update, context: ContextTypes.DEFAULT_
     try:
         new_price = int(update.message.text.strip())
         await set_setting("price", new_price)
-        await update.message.reply_text(f"âœ… Global Price Updated Successfully to: â‚¹{new_price}")
+        await update.message.reply_text(f"✅ Global Price Updated Successfully to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Invalid price. Please send a valid number.")
+        await update.message.reply_text("⚠️ Invalid price. Please send a valid number.")
     return ConversationHandler.END
 
 
@@ -586,7 +587,7 @@ async def admin_set_link_receive(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     new_link = update.message.text.strip()
     await set_setting("group_link", new_link)
-    await update.message.reply_text("âœ… Global Link Updated Successfully")
+    await update.message.reply_text("✅ Global Link Updated Successfully")
     return ConversationHandler.END
 
 
@@ -595,7 +596,7 @@ async def admin_set_welcome_receive(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     new_welcome = update.message.text.strip()
     await set_setting("welcome_text", new_welcome)
-    await update.message.reply_text("âœ… Welcome Message Updated Successfully")
+    await update.message.reply_text("✅ Welcome Message Updated Successfully")
     return ConversationHandler.END
 
 
@@ -603,7 +604,7 @@ async def admin_set_start_photo_receive(update: Update, context: ContextTypes.DE
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
     if not update.message.photo:
-        await update.message.reply_text("âš ï¸ Please send a valid photo.")
+        await update.message.reply_text("⚠️ Please send a valid photo.")
         return SETTING_START_PHOTO
 
     file_id = update.message.photo[-1].file_id
@@ -612,7 +613,7 @@ async def admin_set_start_photo_receive(update: Update, context: ContextTypes.DE
         {"$set": {"key": "start_photo", "file_id": file_id}},
         upsert=True
     )
-    await update.message.reply_text("âœ… Start Photo updated successfully!")
+    await update.message.reply_text("✅ Start Photo updated successfully!")
     return ConversationHandler.END
 
 
@@ -620,11 +621,11 @@ async def admin_set_howto_receive(update: Update, context: ContextTypes.DEFAULT_
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
     if not update.message.video:
-        await update.message.reply_text("âš ï¸ Please send a video file.")
+        await update.message.reply_text("⚠️ Please send a video file.")
         return SETTING_HOWTO
     file_id = update.message.video.file_id
     await settings_col.update_one({"key": "how_to_video"}, {"$set": {"file_id": file_id}}, upsert=True)
-    await update.message.reply_text("âœ… How to buy video updated successfully!")
+    await update.message.reply_text("✅ How to buy video updated successfully!")
     return ConversationHandler.END
 
 
@@ -633,7 +634,7 @@ async def admin_set_support_receive(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     new_support = update.message.text.strip()
     await set_setting("support_username", new_support)
-    await update.message.reply_text(f"âœ… Support Username Updated Successfully to {new_support} across all menus and buttons!")
+    await update.message.reply_text(f"✅ Support Username Updated Successfully to {new_support} across all menus and buttons!")
     return ConversationHandler.END
 
 
@@ -643,9 +644,9 @@ async def add_admin_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_admin_id = int(update.message.text.strip())
         await admins_col.update_one({"user_id": new_admin_id}, {"$set": {"user_id": new_admin_id}}, upsert=True)
-        await update.message.reply_text(f"âœ… Admin {new_admin_id} added successfully!")
+        await update.message.reply_text(f"✅ Admin {new_admin_id} added successfully!")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Invalid User ID. Please send a numeric Telegram User ID.")
+        await update.message.reply_text("⚠️ Invalid User ID. Please send a numeric Telegram User ID.")
     return ConversationHandler.END
 
 
@@ -655,12 +656,12 @@ async def remove_admin_receive(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         rem_id = int(update.message.text.strip())
         if rem_id in INITIAL_ADMIN_IDS:
-            await update.message.reply_text("âš ï¸ Cannot remove primary default admin.")
+            await update.message.reply_text("⚠️ Cannot remove primary default admin.")
             return ConversationHandler.END
         await admins_col.delete_one({"user_id": rem_id})
-        await update.message.reply_text(f"âœ… Admin {rem_id} removed successfully!")
+        await update.message.reply_text(f"✅ Admin {rem_id} removed successfully!")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Invalid User ID.")
+        await update.message.reply_text("⚠️ Invalid User ID.")
     return ConversationHandler.END
 
 
@@ -670,14 +671,14 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text.strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await update.message.reply_text("âš ï¸ Invalid format. Please use: `Name | Price | Group Link`", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("⚠️ Invalid format. Please use: `Name | Price | Group Link`", parse_mode=ParseMode.HTML)
         return ADDING_PRODUCT
 
     name, price_str, link = parts[0], parts[1], parts[2]
     try:
         price = int(price_str)
     except ValueError:
-        await update.message.reply_text("âš ï¸ Price must be numeric. Try again:")
+        await update.message.reply_text("⚠️ Price must be numeric. Try again:")
         return ADDING_PRODUCT
 
     import time
@@ -688,7 +689,7 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
         "price": price,
         "group_link": link
     })
-    await update.message.reply_text(f"âœ… Product '{name}' added successfully with unique link and price!")
+    await update.message.reply_text(f"✅ Product '{name}' added successfully with unique link and price!")
     return ConversationHandler.END
 
 
@@ -698,7 +699,7 @@ async def edit_product_name_receive(update: Update, context: ContextTypes.DEFAUL
     p_id = context.user_data.get("editing_product_id")
     new_name = update.message.text.strip()
     await products_col.update_one({"product_id": p_id}, {"$set": {"name": new_name}})
-    await update.message.reply_text(f"âœ… Product name updated to: {new_name}")
+    await update.message.reply_text(f"✅ Product name updated to: {new_name}")
     return ConversationHandler.END
 
 
@@ -709,9 +710,9 @@ async def edit_product_price_receive(update: Update, context: ContextTypes.DEFAU
     try:
         new_price = int(update.message.text.strip())
         await products_col.update_one({"product_id": p_id}, {"$set": {"price": new_price}})
-        await update.message.reply_text(f"âœ… Product price updated to: â‚¹{new_price}")
+        await update.message.reply_text(f"✅ Product price updated to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Please enter a valid number.")
+        await update.message.reply_text("⚠️ Please enter a valid number.")
     return ConversationHandler.END
 
 
@@ -721,7 +722,7 @@ async def edit_product_link_receive(update: Update, context: ContextTypes.DEFAUL
     p_id = context.user_data.get("editing_product_id")
     new_link = update.message.text.strip()
     await products_col.update_one({"product_id": p_id}, {"$set": {"group_link": new_link}})
-    await update.message.reply_text("âœ… Product link updated successfully!")
+    await update.message.reply_text("✅ Product link updated successfully!")
     return ConversationHandler.END
 
 
@@ -730,23 +731,23 @@ async def set_howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not update.message.video:
-        await update.message.reply_text("âš ï¸ Please send a video with the /sethowto command.")
+        await update.message.reply_text("⚠️ Please send a video with the /sethowto command.")
         return
 
     file_id = update.message.video.file_id
     await settings_col.update_one({"key": "how_to_video"}, {"$set": {"file_id": file_id}}, upsert=True)
-    await update.message.reply_text("âœ… How to buy video updated successfully!")
+    await update.message.reply_text("✅ How to buy video updated successfully!")
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.photo:
-        await update.message.reply_text("âš ï¸ Please send a valid image/screenshot of your payment!")
+        await update.message.reply_text("⚠️ Please send a valid image/screenshot of your payment!")
         return WAITING_FOR_SCREENSHOT
 
     user = update.effective_user
     existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
     if existing_pending:
-        await update.message.reply_text("âš ï¸ You already have a payment verification pending with admins.")
+        await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
         return ConversationHandler.END
 
     photo_id = update.message.photo[-1].file_id
@@ -772,23 +773,23 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await purchases_col.insert_one(purchase_doc)
 
     await update.message.reply_text(
-        "âœ… <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
+        "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
         parse_mode=ParseMode.HTML,
     )
 
     admin_keyboard = [
         [
-            InlineKeyboardButton("âœ… Approve", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton("âŒ Reject", callback_data=f"reject_{user.id}"),
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}"),
         ]
     ]
 
     forward_caption = (
-        f"ðŸ”” <b>New Payment Verification Request!</b>\n\n"
-        f"ðŸ‘¤ User ID: <code>{user.id}</code>\n"
-        f"ðŸ”— Username: {username}\n"
-        f"ðŸ“¦ Product: {prod_name}\n"
-        f"ðŸ’° Amount: â‚¹{current_price}\n\n"
+        f"🔔 <b>New Payment Verification Request!</b>\n\n"
+        f"👤 User ID: <code>{user.id}</code>\n"
+        f"🔗 Username: {username}\n"
+        f"📦 Product: {prod_name}\n"
+        f"💰 Amount: ₹{current_price}\n\n"
         f"Please check the screenshot below:"
     )
 
@@ -826,7 +827,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     purchase = await purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
     if not purchase:
-        await query.answer("âš ï¸ This payment has already been processed or does not exist.", show_alert=True)
+        await query.answer("⚠️ This payment has already been processed or does not exist.", show_alert=True)
         try:
             await query.message.edit_reply_markup(reply_markup=None)
         except Exception:
@@ -850,14 +851,14 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         success_msg = (
-            "âœ… Payment Received Successfully!\n\n"
-            "Hi ðŸ‘‹\n\n"
-            "Thank you for your payment ðŸ’–\n\n"
-            "ðŸ”— Your private channel/product link ðŸ‘‡\n"
+            "✅ Payment Received Successfully!\n\n"
+            "Hi 👋\n\n"
+            "Thank you for your payment 💕\n\n"
+            "🔗 Your private channel/product link 👇\n"
             f"{group_link}\n\n"
-            "If you face any issue, feel free to message me anytime ðŸ˜Š\n\n"
-            f"ðŸ‘‰ {support_username}\n\n"
-            "ðŸ™ Thanks for trusting us!"
+            "If you face any issue, feel free to message me anytime 😊\n\n"
+            f"👉 {support_username}\n\n"
+            "🙏 Thanks for trusting us!"
         )
         try:
             await context.bot.send_message(
@@ -867,7 +868,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Could not message user {target_user_id}: {e}")
 
         await query.message.edit_caption(
-            caption=query.message.caption + f"\n\nðŸŸ¢ <b>APPROVED by {admin_name}</b>",
+            caption=query.message.caption + f"\n\n🟢 <b>APPROVED by {admin_name}</b>",
             reply_markup=None,
             parse_mode=ParseMode.HTML,
         )
@@ -878,7 +879,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"status": "rejected"}},
         )
 
-        reject_msg = f"âŒ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+        reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
         try:
             await context.bot.send_message(
                 chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
@@ -887,7 +888,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Could not message user {target_user_id}: {e}")
 
         await query.message.edit_caption(
-            caption=query.message.caption + f"\n\nðŸ”´ <b>REJECTED by {admin_name}</b>",
+            caption=query.message.caption + f"\n\n🔴 <b>REJECTED by {admin_name}</b>",
             reply_markup=None,
             parse_mode=ParseMode.HTML,
         )
@@ -897,7 +898,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
 
-    await update.message.reply_text("ðŸ“¢ Send the text or photo you want to broadcast to all users:")
+    await update.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
     return WAITING_FOR_BROADCAST
 
 
@@ -907,7 +908,7 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     users = await users_col.find({}).to_list(length=100000)
     success, fail = 0, 0
-    status_msg = await update.message.reply_text(f"ðŸš€ Broadcasting to {len(users)} users...")
+    status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
 
     for user in users:
         uid = user["user_id"]
@@ -925,7 +926,7 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             fail += 1
 
     await status_msg.edit_text(
-        f"âœ… <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
+        f"✅ <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
         parse_mode=ParseMode.HTML,
     )
     return ConversationHandler.END
@@ -941,7 +942,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_rejected = await purchases_col.count_documents({"status": "rejected"})
 
     stats_text = (
-        f"ðŸ“Š <b>Bot Statistics</b>\n\n"
+        f"📊 <b>Bot Statistics</b>\n\n"
         f"Total Users: <code>{total_users}</code>\n"
         f"Pending Payments: <code>{total_pending}</code>\n"
         f"Approved Payments: <code>{total_approved}</code>\n"
@@ -953,17 +954,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
-    admin_text = "ðŸ‘‘ <b>ADMIN PANEL</b>\n\nChoose an action below:"
+    admin_text = "👑 <b>ADMIN PANEL</b>\n\nChoose an action below:"
     keyboard = [
-        [InlineKeyboardButton("ðŸ“Š Stats", callback_data="admin_stats"), InlineKeyboardButton("ðŸ“¢ Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("ðŸ’³ Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("ðŸ’° Change Global Price", callback_data="set_price")],
-        [InlineKeyboardButton("ðŸ”— Change Global Link", callback_data="set_link"), InlineKeyboardButton("ðŸ“ Change Welcome", callback_data="set_welcome")],
-        [InlineKeyboardButton("ðŸ–¼ Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("ðŸŽ¥ Change HowTo Video", callback_data="set_howto_menu")],
-        [InlineKeyboardButton("ðŸ†˜ Change Support", callback_data="set_support")],
-        [InlineKeyboardButton("âž• Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("âž– Remove Admin", callback_data="remove_admin_menu")],
-        [InlineKeyboardButton("ðŸ“¦ Add Product", callback_data="add_product_menu"), InlineKeyboardButton("ðŸ—‘ï¸ Remove Product", callback_data="remove_product_menu")],
-        [InlineKeyboardButton("âœï¸ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="main_menu")],
+        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
+        [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
+        [InlineKeyboardButton("🖼 Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+        [InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
+        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
+        [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
     await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
