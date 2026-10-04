@@ -2,6 +2,8 @@
 import io
 import logging
 import os
+import time
+from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 from telegram import (
@@ -52,6 +54,16 @@ DEFAULT_SETTINGS = {
         "✨ One-time payment, enjoy forever!"
     ),
     "support_username": "@Vidsell6",
+    # Mega defaults
+    "mega_group_link": "https://t.me/+H_y0MBr_c0g2ZDk1",
+    "mega_caption": (
+        "📁 Mega Premium Access\n\n"
+        "Choose Your Plan:\n\n"
+        "🔥 1 Day - ₹70\n"
+        "🔥 1 Month - ₹300\n"
+        "🔥 Permanent - ₹800\n\n"
+        "After payment send screenshot."
+    ),
 }
 
 WAITING_FOR_SCREENSHOT = 1
@@ -73,7 +85,14 @@ WAITING_FOR_BROADCAST = 2
     EDITING_PRODUCT_PRICE,
     EDITING_PRODUCT_LINK,
     SETTING_START_PHOTO,
-) = range(10, 24)
+    # Mega Admin States
+    MEGA_ADDING_PLAN,
+    MEGA_CHANGING_PRICE,
+    MEGA_CHANGING_DAYS,
+    MEGA_CHANGING_LINK,
+    MEGA_CHANGING_CAPTION,
+    MEGA_CHANGING_PHOTO,
+) = range(10, 30)
 
 # Initialize MongoDB via Motor
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -83,6 +102,11 @@ purchases_col = db["purchases"]
 settings_col = db["settings"]
 admins_col = db["admins"]
 products_col = db["products"]
+
+# Mega Collections
+mega_plans_col = db["mega_plans"]
+mega_subs_col = db["mega_subs"]
+mega_purchases_col = db["mega_purchases"]
 
 # Flask app for keep-alive
 app_flask = Flask(__name__)
@@ -141,6 +165,17 @@ async def initialize_settings():
             upsert=True
         )
 
+    # Initialize default Mega plans if empty
+    mega_count = await mega_plans_col.count_documents({})
+    if mega_count == 0:
+        default_plans = [
+            {"plan_id": "plan_1day", "name": "1 Day", "price": 70, "days": 1},
+            {"plan_id": "plan_1month", "name": "1 Month", "price": 300, "days": 30},
+            {"plan_id": "plan_permanent", "name": "Permanent", "price": 800, "days": 0},
+        ]
+        for p in default_plans:
+            await mega_plans_col.update_one({"plan_id": p["plan_id"]}, {"$set": p}, upsert=True)
+
 
 def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
     upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR"
@@ -189,6 +224,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
+    # Add Mega Access Button
+    keyboard.append([InlineKeyboardButton("📁 Mega Access", callback_data="mega_access_menu")])
+
     keyboard.append([
         InlineKeyboardButton("❓ How To Buy", callback_data="how"),
         InlineKeyboardButton("🆘 Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
@@ -234,6 +272,7 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
 
@@ -263,6 +302,8 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
         else:
             keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
+
+        keyboard.append([InlineKeyboardButton("📁 Mega Access", callback_data="mega_access_menu")])
 
         keyboard.append([
             InlineKeyboardButton("❓ How To Buy", callback_data="how"),
@@ -312,6 +353,252 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         await admin_panel_menu(update, context)
         return ConversationHandler.END
+
+    # ================= MEGA ACCESS ROUTING =================
+    elif query.data == "mega_access_menu":
+        mega_caption = await get_setting("mega_caption")
+        plans = await mega_plans_col.find({}).to_list(length=100)
+
+        keyboard = []
+        for p in plans:
+            p_id = p.get("plan_id")
+            p_name = p.get("name")
+            p_price = p.get("price")
+            keyboard.append([InlineKeyboardButton(f"🔥 {p_name} - ₹{p_price}", callback_data=f"megabuy_{p_id}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
+
+        mega_photo_doc = await settings_col.find_one({"key": "mega_photo"})
+        photo_file_id = mega_photo_doc.get("file_id") if mega_photo_doc else None
+
+        if query.message.photo:
+            await query.message.delete()
+
+        if photo_file_id:
+            try:
+                await query.message.reply_photo(
+                    photo=photo_file_id,
+                    caption=mega_caption,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+                return ConversationHandler.END
+            except Exception:
+                pass
+
+        await query.message.reply_text(
+            text=mega_caption,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML
+        )
+        return ConversationHandler.END
+
+    elif query.data.startswith("megabuy_"):
+        plan_id = query.data.split("_", 1)[1]
+        plan = await mega_plans_col.find_one({"plan_id": plan_id})
+        if not plan:
+            await query.answer("Plan not found!", show_alert=True)
+            return ConversationHandler.END
+
+        p_name = plan.get("name", "Mega Plan")
+        p_price = plan.get("price", 100)
+        current_upi = await get_setting("upi_id")
+
+        existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
+        if existing_pending:
+            await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
+            return ConversationHandler.END
+
+        qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}")
+        payment_text = (
+            "✦ <b>MEGA PAYMENT</b>\n\n"
+            f"📦 Plan: {p_name}\n"
+            f"🔹 Amount: ₹{p_price}\n"
+            f"🔹 Validity: {p_name}\n\n"
+            "───────────────────\n\n"
+            "🔹 <b>PAYMENT METHODS</b>\n\n"
+            "Paytm • GPay • PhonePe • UPI\n\n"
+            "UPI ID:\n"
+            f"<b>{current_upi}</b>\n\n"
+            "<b>AFTER PAYMENT:</b>\n"
+            "Send payment screenshot in this chat."
+        )
+
+        context.user_data["mega_selected_plan_id"] = plan_id
+        context.user_data["mega_selected_plan_name"] = p_name
+        context.user_data["mega_selected_plan_price"] = p_price
+
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mega_access_menu")]]
+
+        await query.message.delete()
+        await query.message.reply_photo(
+            photo=InputFile(qr_bio, filename="qr.png"),
+            caption=payment_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML,
+        )
+        return WAITING_FOR_SCREENSHOT
+
+    # ================= MEGA ADMIN MENU ROUTING =================
+    elif query.data == "mega_admin_menu":
+        if not await is_admin(user.id):
+            await query.answer("Unauthorized!", show_alert=True)
+            return ConversationHandler.END
+
+        text = "📁 <b>MEGA FILE MANAGER ADMIN</b>\n\nChoose an action below:"
+        kb = [
+            [InlineKeyboardButton("➕ Add Plan", callback_data="mega_add_plan_menu"), InlineKeyboardButton("🗑 Remove Plan", callback_data="mega_remove_plan_menu")],
+            [InlineKeyboardButton("💰 Change Price", callback_data="mega_change_price_menu"), InlineKeyboardButton("📅 Change Days", callback_data="mega_change_days_menu")],
+            [InlineKeyboardButton("🔗 Change Group Link", callback_data="mega_set_link"), InlineKeyboardButton("📝 Change Caption", callback_data="mega_set_caption")],
+            [InlineKeyboardButton("🖼 Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("📊 Mega Stats", callback_data="mega_stats")],
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
+        ]
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data == "mega_add_plan_menu":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text("➕ Send plan details in this format:\n`Plan Name | Price | Days`\n\nExample:\n`7 Day | 150 | 7`\n(Use 0 days for Permanent)", parse_mode=ParseMode.HTML)
+        return MEGA_ADDING_PLAN
+
+    elif query.data == "mega_remove_plan_menu":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        plans = await mega_plans_col.find({}).to_list(length=100)
+        if not plans:
+            await query.message.reply_text("⚠️ No plans available to remove.")
+            return ConversationHandler.END
+        kb = []
+        for p in plans:
+            kb.append([InlineKeyboardButton(f"❌ {p.get('name')}", callback_data=f"megadelplan_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
+        if query.message.photo:
+            await query.message.edit_caption(caption="🗑️ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text="🗑️ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data.startswith("megadelplan_"):
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        p_id = query.data.split("_", 1)[1]
+        await mega_plans_col.delete_one({"plan_id": p_id})
+        kb = [[InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")]]
+        if query.message.photo:
+            await query.message.edit_caption(caption="✅ Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+        else:
+            await query.message.edit_text(text="✅ Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    elif query.data == "mega_change_price_menu":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        plans = await mega_plans_col.find({}).to_list(length=100)
+        if not plans:
+            await query.message.reply_text("⚠️ No plans available.")
+            return ConversationHandler.END
+        kb = []
+        for p in plans:
+            kb.append([InlineKeyboardButton(f"💰 {p.get('name')} (₹{p.get('price')})", callback_data=f"megachprice_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
+        if query.message.photo:
+            await query.message.edit_caption(caption="Select plan to change price:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text="Select plan to change price:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data.startswith("megachprice_"):
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        p_id = query.data.split("_", 1)[1]
+        context.user_data["mega_editing_plan_id"] = p_id
+        await query.message.reply_text("💰 Send the new numeric price for this plan:")
+        return MEGA_CHANGING_PRICE
+
+    elif query.data == "mega_change_days_menu":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        plans = await mega_plans_col.find({}).to_list(length=100)
+        if not plans:
+            await query.message.reply_text("⚠️️ No plans available.")
+            return ConversationHandler.END
+        kb = []
+        for p in plans:
+            kb.append([InlineKeyboardButton(f"📅 {p.get('name')} ({p.get('days')} days)", callback_data=f"megachdays_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
+        if query.message.photo:
+            await query.message.edit_caption(caption="Select plan to change days/validity:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text="Select plan to change days/validity:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data.startswith("megachdays_"):
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        p_id = query.data.split("_", 1)[1]
+        context.user_data["mega_editing_plan_id"] = p_id
+        await query.message.reply_text("📅 Send the new number of days (0 for permanent):")
+        return MEGA_CHANGING_DAYS
+
+    elif query.data == "mega_set_link":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text("🔗 Send the new Mega Group/Channel Link:")
+        return MEGA_CHANGING_LINK
+
+    elif query.data == "mega_set_caption":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text("📝 Send the new Mega Access caption:")
+        return MEGA_CHANGING_CAPTION
+
+    elif query.data == "mega_set_photo":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text("🖼 Please send the new photo for Mega Access:")
+        return MEGA_CHANGING_PHOTO
+
+    elif query.data == "mega_stats":
+        if not await is_admin(user.id):
+            await query.answer("Unauthorized!", show_alert=True)
+            return ConversationHandler.END
+
+        total_subs = await mega_subs_col.count_documents({})
+        active_subs = await mega_subs_col.count_documents({"status": "active"})
+        expired_subs = await mega_subs_col.count_documents({"status": "expired"})
+        day1_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Day", "$options": "i"}})
+        day7_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "7 Day", "$options": "i"}})
+        day30_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Month|30 Day", "$options": "i"}})
+        perm_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "Permanent", "$options": "i"}})
+
+        # Total revenue from approved mega purchases
+        pipeline = [{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
+        rev_cursor = mega_purchases_col.aggregate(pipeline)
+        rev_list = await rev_cursor.to_list(length=1)
+        total_rev = rev_list[0]["total"] if rev_list else 0
+
+        stats_text = (
+            f"📊 <b>Mega File Manager Statistics</b>\n\n"
+            f"Total Subscribers: <code>{total_subs}</code>\n"
+            f"Active Subscribers: <code>{active_subs}</code>\n"
+            f"Expired Subscribers: <code>{expired_subs}</code>\n"
+            f"1 Day Users: <code>{day1_subs}</code>\n"
+            f"7 Day Users: <code>{day7_subs}</code>\n"
+            f"30 Day Users: <code>{day30_subs}</code>\n"
+            f"Permanent Users: <code>{perm_subs}</code>\n"
+            f"Total Revenue: <code>₹{total_rev}</code>"
+        )
+        kb = [[InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")]]
+        if query.message.photo:
+            await query.message.edit_caption(caption=stats_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=stats_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    # ================= END MEGA ROUTING =================
 
     elif query.data.startswith("buy_"):
         prod_id = query.data.split("_", 1)[1]
@@ -638,6 +925,97 @@ async def admin_set_support_receive(update: Update, context: ContextTypes.DEFAUL
     return ConversationHandler.END
 
 
+# ================= MEGA ADMIN RECEIVE HANDLERS =================
+async def mega_add_plan_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    text = update.message.text.strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) < 3:
+        await update.message.reply_text("⚠️ Invalid format. Please use: `Name | Price | Days`", parse_mode=ParseMode.HTML)
+        return MEGA_ADDING_PLAN
+
+    name, price_str, days_str = parts[0], parts[1], parts[2]
+    try:
+        price = int(price_str)
+        days = int(days_str)
+    except ValueError:
+        await update.message.reply_text("⚠️ Price and Days must be numeric. Try again:")
+        return MEGA_ADDING_PLAN
+
+    plan_id = f"plan_{int(time.time())}"
+    await mega_plans_col.insert_one({
+        "plan_id": plan_id,
+        "name": name,
+        "price": price,
+        "days": days
+    })
+    await update.message.reply_text(f"✅ Mega Plan '{name}' added successfully!")
+    return ConversationHandler.END
+
+
+async def mega_change_price_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    p_id = context.user_data.get("mega_editing_plan_id")
+    try:
+        new_price = int(update.message.text.strip())
+        await mega_plans_col.update_one({"plan_id": p_id}, {"$set": {"price": new_price}})
+        await update.message.reply_text(f"✅ Mega Plan price updated to: ₹{new_price}")
+    except ValueError:
+        await update.message.reply_text("⚠️ Please enter a valid number.")
+    return ConversationHandler.END
+
+
+async def mega_change_days_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    p_id = context.user_data.get("mega_editing_plan_id")
+    try:
+        new_days = int(update.message.text.strip())
+        await mega_plans_col.update_one({"plan_id": p_id}, {"$set": {"days": new_days}})
+        await update.message.reply_text(f"✅ Mega Plan days/validity updated to: {new_days} days")
+    except ValueError:
+        await update.message.reply_text("⚠️ Please enter a valid number.")
+    return ConversationHandler.END
+
+
+async def mega_change_link_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    new_link = update.message.text.strip()
+    await set_setting("mega_group_link", new_link)
+    await update.message.reply_text("✅ Mega Group Link Updated Successfully")
+    return ConversationHandler.END
+
+
+async def mega_change_caption_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    new_caption = update.message.text.strip()
+    await set_setting("mega_caption", new_caption)
+    await update.message.reply_text("✅ Mega Access Caption Updated Successfully")
+    return ConversationHandler.END
+
+
+async def mega_change_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    if not update.message.photo:
+        await update.message.reply_text("⚠️ Please send a valid photo.")
+        return MEGA_CHANGING_PHOTO
+
+    file_id = update.message.photo[-1].file_id
+    await settings_col.update_one(
+        {"key": "mega_photo"},
+        {"$set": {"key": "mega_photo", "file_id": file_id}},
+        upsert=True
+    )
+    await update.message.reply_text("✅ Mega Access Photo updated successfully!")
+    return ConversationHandler.END
+# ================= END MEGA ADMIN RECEIVE =================
+
+
 async def add_admin_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
@@ -681,7 +1059,6 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ Price must be numeric. Try again:")
         return ADDING_PRODUCT
 
-    import time
     product_id = f"prod_{int(time.time())}"
     await products_col.insert_one({
         "product_id": product_id,
@@ -745,13 +1122,83 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return WAITING_FOR_SCREENSHOT
 
     user = update.effective_user
+    photo_id = update.message.photo[-1].file_id
+    username = f"@{user.username}" if user.username else "No Username"
+
+    # Check if this is a Mega purchase or regular product purchase
+    mega_plan_id = context.user_data.get("mega_selected_plan_id")
+    if mega_plan_id:
+        existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
+        if existing_pending:
+            await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
+            return ConversationHandler.END
+
+        plan = await mega_plans_col.find_one({"plan_id": mega_plan_id})
+        if not plan:
+            plan = {"name": "Mega Plan", "price": 100, "days": 0}
+
+        p_name = plan.get("name", "Mega Plan")
+        p_price = plan.get("price", 100)
+
+        purchase_doc = {
+            "user_id": user.id,
+            "username": username,
+            "plan_id": mega_plan_id,
+            "plan_name": p_name,
+            "amount": p_price,
+            "status": "pending",
+            "date": update.message.date,
+        }
+        await mega_purchases_col.insert_one(purchase_doc)
+
+        await update.message.reply_text(
+            "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
+            parse_mode=ParseMode.HTML,
+        )
+
+        admin_keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"megaapprove_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"megareject_{user.id}"),
+            ]
+        ]
+
+        forward_caption = (
+            f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
+            f"👤 User ID: <code>{user.id}</code>\n"
+            f"🔗 Username: {username}\n"
+            f"📦 Plan: {p_name}\n"
+            f"💰 Amount: ₹{p_price}\n\n"
+            f"Please check the screenshot below:"
+        )
+
+        # Clear mega plan from context so it doesn't leak
+        context.user_data.pop("mega_selected_plan_id", None)
+
+        all_admins = INITIAL_ADMIN_IDS.copy()
+        async for adm in admins_col.find({}):
+            if adm["user_id"] not in all_admins:
+                all_admins.append(adm["user_id"])
+
+        for admin_id in all_admins:
+            try:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=photo_id,
+                    caption=forward_caption,
+                    reply_markup=InlineKeyboardMarkup(admin_keyboard),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as e:
+                logger.error(f"Failed to forward mega screenshot to admin {admin_id}: {e}")
+
+        return ConversationHandler.END
+
+    # Regular Product Flow
     existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
     if existing_pending:
         await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
         return ConversationHandler.END
-
-    photo_id = update.message.photo[-1].file_id
-    username = f"@{user.username}" if user.username else "No Username"
     
     prod_id = context.user_data.get("selected_product_id", "default")
     product = await products_col.find_one({"product_id": prod_id})
@@ -825,6 +1272,115 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data[0]
     target_user_id = int(data[1])
 
+    # Check if Mega Approval
+    if action in ["megaapprove", "megareject"]:
+        purchase = await mega_purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
+        if not purchase:
+            await query.answer("⚠️ This mega payment has already been processed or does not exist.", show_alert=True)
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        admin_name = query.from_user.first_name or "Admin"
+        support_username = await get_setting("support_username")
+
+        if action == "megaapprove":
+            await mega_purchases_col.update_one(
+                {"user_id": target_user_id, "status": "pending"},
+                {"$set": {"status": "approved"}},
+            )
+
+            # Calculate expiry time
+            plan_id = purchase.get("plan_id")
+            plan = await mega_plans_col.find_one({"plan_id": plan_id})
+            days = plan.get("days", 0) if plan else 0
+            plan_name = purchase.get("plan_name", "Mega Plan")
+
+            now = datetime.utcnow()
+            if days > 0:
+                expiry_time = now + timedelta(days=days)
+            else:
+                expiry_time = None  # Permanent
+
+            # Save subscription in MongoDB
+            await mega_subs_col.update_one(
+                {"user_id": target_user_id},
+                {
+                    "$set": {
+                        "user_id": target_user_id,
+                        "plan_id": plan_id,
+                        "plan_name": plan_name,
+                        "approval_time": now,
+                        "expiry_time": expiry_time,
+                        "status": "active"
+                    }
+                },
+                upsert=True
+            )
+
+            # Create single-use unique Telegram invite link
+            mega_group_link = await get_setting("mega_group_link")
+            # Extract chat_id/username from mega_group_link if possible, or try creating link via bot chat API
+            # Note: For bot to create invite link, mega_group_link must be channel/group chat_id or username format, or we use standard create_chat_invite_link if chat is accessible.
+            invite_link = mega_group_link # Fallback
+            try:
+                # If mega_group_link is a username like @channel or chat_id
+                target_chat = mega_group_link
+                if mega_group_link.startswith("https://t.me/+"):
+                    # For hash invite links, we can't generate single use via API unless we have chat identifier. Let's support standard chat identifier or fallback to standard link.
+                    pass
+                else:
+                    link_obj = await context.bot.create_chat_invite_link(
+                        chat_id=target_chat,
+                        member_limit=1,
+                        creates_join_request=False
+                    )
+                    invite_link = link_obj.invite_link
+            except Exception as e:
+                logger.error(f"Failed to create single-use invite link: {e}")
+
+            success_msg = (
+                "✅ Payment Approved\n\n"
+                "Join Here:\n"
+                f"{invite_link}"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Could not message user {target_user_id}: {e}")
+
+            await query.message.edit_caption(
+                caption=query.message.caption + f"\n\n🟢 <b>MEGA APPROVED by {admin_name}</b>",
+                reply_markup=None,
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif action == "megareject":
+            await mega_purchases_col.update_one(
+                {"user_id": target_user_id, "status": "pending"},
+                {"$set": {"status": "rejected"}},
+            )
+
+            reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Could not message user {target_user_id}: {e}")
+
+            await query.message.edit_caption(
+                caption=query.message.caption + f"\n\n🔴 <b>MEGA REJECTED by {admin_name}</b>",
+                reply_markup=None,
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    # Regular Product Approval Flow
     purchase = await purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
     if not purchase:
         await query.answer("⚠️ This payment has already been processed or does not exist.", show_alert=True)
@@ -892,6 +1448,40 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=None,
             parse_mode=ParseMode.HTML,
         )
+
+
+async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
+    """Continuously checks active subscriptions and removes expired users."""
+    try:
+        now = datetime.utcnow()
+        cursor = mega_subs_col.find({"status": "active", "expiry_time": {"$ne": None, "$lte": now}})
+        async for sub in cursor:
+            user_id = sub["user_id"]
+            mega_group_link = await get_setting("mega_group_link")
+            
+            # Attempt to ban/unban or kick user from group if chat_id is available
+            try:
+                target_chat = mega_group_link
+                if not target_chat.startswith("https://t.me/+"):
+                    await context.bot.ban_chat_member(chat_id=target_chat, user_id=user_id)
+                    await context.bot.unban_chat_member(chat_id=target_chat, user_id=user_id)
+            except Exception as e:
+                logger.error(f"Failed to remove expired user {user_id} from group: {e}")
+
+            # Update MongoDB status to expired
+            await mega_subs_col.update_one({"user_id": user_id}, {"$set": {"status": "expired"}})
+
+            # Send expiration message
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⚠️ Your subscription has expired.",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Failed to send expiration notification to {user_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error in check_expiring_subscriptions job: {e}")
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -964,6 +1554,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
     await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -976,6 +1567,9 @@ def main():
 
     async def post_init(application: Application):
         await initialize_settings()
+        # Register job queue interval for auto expiry check (every 60 seconds)
+        if application.job_queue:
+            application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
         logger.info("Bot is up and running...")
 
     app.post_init = post_init
@@ -984,7 +1578,10 @@ def main():
         "^(buy_.*|how|main_menu|admin_panel|admin_stats|admin_broadcast|set_upi|set_price|"
         "set_link|set_welcome|set_start_photo_menu|set_howto_menu|set_support|add_admin_menu|remove_admin_menu|"
         "add_product_menu|remove_product_menu|manage_products_menu|delprod_.*|editprod_.*|"
-        "epname_.*|epprice_.*|eplink_.*)$"
+        "epname_.*|epprice_.*|eplink_.*|mega_access_menu|megabuy_.*|mega_admin_menu|"
+        "mega_add_plan_menu|mega_remove_plan_menu|megadelplan_.*|mega_change_price_menu|"
+        "megachprice_.*|mega_change_days_menu|megachdays_.*|mega_set_link|mega_set_caption|"
+        "mega_set_photo|mega_stats)$"
     )
 
     conv_handler = ConversationHandler(
@@ -1011,6 +1608,13 @@ def main():
             EDITING_PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_product_name_receive)],
             EDITING_PRODUCT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_product_price_receive)],
             EDITING_PRODUCT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_product_link_receive)],
+            # Mega States
+            MEGA_ADDING_PLAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_add_plan_receive)],
+            MEGA_CHANGING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_price_receive)],
+            MEGA_CHANGING_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_days_receive)],
+            MEGA_CHANGING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_link_receive)],
+            MEGA_CHANGING_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_caption_receive)],
+            MEGA_CHANGING_PHOTO: [MessageHandler(filters.PHOTO, mega_change_photo_receive)],
         },
         fallbacks=[
             CommandHandler("start", start),
@@ -1023,7 +1627,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("sethowto", set_howto_command))
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|megaapprove|megareject)_"))
 
     app.run_polling()
 
