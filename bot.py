@@ -64,6 +64,7 @@ DEFAULT_SETTINGS = {
         "🔥 Permanent - ₹800\n\n"
         "After payment send screenshot."
     ),
+    "mega_menu_name": "📁 Mega Access",
 }
 
 WAITING_FOR_SCREENSHOT = 1
@@ -92,7 +93,8 @@ WAITING_FOR_BROADCAST = 2
     MEGA_CHANGING_LINK,
     MEGA_CHANGING_CAPTION,
     MEGA_CHANGING_PHOTO,
-) = range(10, 30)
+    MEGA_CHANGING_MENU_NAME,
+) = range(10, 31)
 
 # Initialize MongoDB via Motor
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -144,6 +146,17 @@ async def get_setting(key: str):
 
 async def set_setting(key: str, value):
     await settings_col.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
+
+
+async def get_mega_menu_name() -> str:
+    """Fetch the dynamic name from MongoDB settings collection, fallback to default."""
+    try:
+        doc = await settings_col.find_one({"key": "mega_menu_name"})
+        if doc and "value" in doc:
+            return doc["value"]
+    except Exception as e:
+        logger.error(f"Error fetching mega menu name: {e}")
+    return DEFAULT_SETTINGS.get("mega_menu_name", "📁 Mega Access")
 
 
 async def initialize_settings():
@@ -213,6 +226,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_template = await get_setting("welcome_text")
     support_username = await get_setting("support_username")
     start_text = welcome_template.format(price=price)
+    mega_button_text = await get_mega_menu_name()
 
     keyboard = []
     products = await products_col.find({}).to_list(length=100)
@@ -224,8 +238,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
-    # Add Mega Access Button
-    keyboard.append([InlineKeyboardButton("📁 Mega Access", callback_data="mega_access_menu")])
+    # Add Mega Access Button (using dynamic name)
+    keyboard.append([InlineKeyboardButton(mega_button_text, callback_data="mega_access_menu")])
 
     keyboard.append([
         InlineKeyboardButton("❓ How To Buy", callback_data="how"),
@@ -292,6 +306,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         welcome_template = await get_setting("welcome_text")
         support_username = await get_setting("support_username")
         start_text = welcome_template.format(price=price)
+        mega_button_text = await get_mega_menu_name()
 
         keyboard = []
         products = await products_col.find({}).to_list(length=100)
@@ -303,7 +318,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
-        keyboard.append([InlineKeyboardButton("📁 Mega Access", callback_data="mega_access_menu")])
+        keyboard.append([InlineKeyboardButton(mega_button_text, callback_data="mega_access_menu")])
 
         keyboard.append([
             InlineKeyboardButton("❓ How To Buy", callback_data="how"),
@@ -451,6 +466,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             [InlineKeyboardButton("💰 Change Price", callback_data="mega_change_price_menu"), InlineKeyboardButton("📅 Change Days", callback_data="mega_change_days_menu")],
             [InlineKeyboardButton("🔗 Change Group Link", callback_data="mega_set_link"), InlineKeyboardButton("📝 Change Caption", callback_data="mega_set_caption")],
             [InlineKeyboardButton("🖼 Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("📊 Mega Stats", callback_data="mega_stats")],
+            [InlineKeyboardButton("✏️ Change Mega Menu Name", callback_data="mega_change_menu_name")],
             [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
         ]
         if query.message.photo:
@@ -524,7 +540,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         plans = await mega_plans_col.find({}).to_list(length=100)
         if not plans:
-            await query.message.reply_text("⚠️️ No plans available.")
+            await query.message.reply_text("⚠️ No plans available.")
             return ConversationHandler.END
         kb = []
         for p in plans:
@@ -561,6 +577,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         await query.message.reply_text("🖼 Please send the new photo for Mega Access:")
         return MEGA_CHANGING_PHOTO
+
+    elif query.data == "mega_change_menu_name":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text("Send the new name for the Mega Access button.")
+        return MEGA_CHANGING_MENU_NAME
 
     elif query.data == "mega_stats":
         if not await is_admin(user.id):
@@ -612,7 +634,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠️️ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
@@ -1013,6 +1035,15 @@ async def mega_change_photo_receive(update: Update, context: ContextTypes.DEFAUL
     )
     await update.message.reply_text("✅ Mega Access Photo updated successfully!")
     return ConversationHandler.END
+
+
+async def mega_change_menu_name_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id):
+        return ConversationHandler.END
+    new_name = update.message.text.strip()
+    await set_setting("mega_menu_name", new_name)
+    await update.message.reply_text(f"✅ Successfully updated the Mega Menu button name to:\n\n{new_name}")
+    return ConversationHandler.END
 # ================= END MEGA ADMIN RECEIVE =================
 
 
@@ -1322,16 +1353,10 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Create single-use unique Telegram invite link
             mega_group_link = await get_setting("mega_group_link")
-            # Extract chat_id/username from mega_group_link if possible, or try creating link via bot chat API
-            # Note: For bot to create invite link, mega_group_link must be channel/group chat_id or username format, or we use standard create_chat_invite_link if chat is accessible.
             invite_link = mega_group_link # Fallback
             try:
-                # If mega_group_link is a username like @channel or chat_id
                 target_chat = mega_group_link
-                if mega_group_link.startswith("https://t.me/+"):
-                    # For hash invite links, we can't generate single use via API unless we have chat identifier. Let's support standard chat identifier or fallback to standard link.
-                    pass
-                else:
+                if not mega_group_link.startswith("https://t.me/+"):
                     link_obj = await context.bot.create_chat_invite_link(
                         chat_id=target_chat,
                         member_limit=1,
@@ -1459,7 +1484,6 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             user_id = sub["user_id"]
             mega_group_link = await get_setting("mega_group_link")
             
-            # Attempt to ban/unban or kick user from group if chat_id is available
             try:
                 target_chat = mega_group_link
                 if not target_chat.startswith("https://t.me/+"):
@@ -1468,10 +1492,8 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Failed to remove expired user {user_id} from group: {e}")
 
-            # Update MongoDB status to expired
             await mega_subs_col.update_one({"user_id": user_id}, {"$set": {"status": "expired"}})
 
-            # Send expiration message
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1567,7 +1589,6 @@ def main():
 
     async def post_init(application: Application):
         await initialize_settings()
-        # Register job queue interval for auto expiry check (every 60 seconds)
         if application.job_queue:
             application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
         logger.info("Bot is up and running...")
@@ -1581,7 +1602,7 @@ def main():
         "epname_.*|epprice_.*|eplink_.*|mega_access_menu|megabuy_.*|mega_admin_menu|"
         "mega_add_plan_menu|mega_remove_plan_menu|megadelplan_.*|mega_change_price_menu|"
         "megachprice_.*|mega_change_days_menu|megachdays_.*|mega_set_link|mega_set_caption|"
-        "mega_set_photo|mega_stats)$"
+        "mega_set_photo|mega_change_menu_name|mega_stats)$"
     )
 
     conv_handler = ConversationHandler(
@@ -1615,6 +1636,7 @@ def main():
             MEGA_CHANGING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_link_receive)],
             MEGA_CHANGING_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_caption_receive)],
             MEGA_CHANGING_PHOTO: [MessageHandler(filters.PHOTO, mega_change_photo_receive)],
+            MEGA_CHANGING_MENU_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_menu_name_receive)],
         },
         fallbacks=[
             CommandHandler("start", start),
