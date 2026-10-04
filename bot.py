@@ -284,7 +284,7 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🖼 Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
         [InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
-        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
+        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️️ Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
         [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
@@ -597,7 +597,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         day30_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Month|30 Day", "$options": "i"}})
         perm_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "Permanent", "$options": "i"}})
 
-        # Total revenue from approved mega purchases
         pipeline = [{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
         rev_cursor = mega_purchases_col.aggregate(pipeline)
         rev_list = await rev_cursor.to_list(length=1)
@@ -634,7 +633,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("⚠️️ You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
@@ -985,7 +984,7 @@ async def mega_change_price_receive(update: Update, context: ContextTypes.DEFAUL
         await mega_plans_col.update_one({"plan_id": p_id}, {"$set": {"price": new_price}})
         await update.message.reply_text(f"✅ Mega Plan price updated to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("⚠️ Please enter a valid number.")
+        await update.message.reply_text("⚠️️ Please enter a valid number.")
     return ConversationHandler.END
 
 
@@ -1149,7 +1148,7 @@ async def set_howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.photo:
-        await update.message.reply_text("⚠️ Please send a valid image/screenshot of your payment!")
+        await update.message.reply_text("⚠️️ Please send a valid image/screenshot of your payment!")
         return WAITING_FOR_SCREENSHOT
 
     user = update.effective_user
@@ -1203,7 +1202,6 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Please check the screenshot below:"
         )
 
-        # Clear mega plan from context so it doesn't leak
         context.user_data.pop("mega_selected_plan_id", None)
 
         all_admins = INITIAL_ADMIN_IDS.copy()
@@ -1225,7 +1223,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         return ConversationHandler.END
 
-    # Regular Product Flow
+    # Regular Product Flow (Unchanged)
     existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
     if existing_pending:
         await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
@@ -1323,7 +1321,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"$set": {"status": "approved"}},
             )
 
-            # Calculate expiry time
             plan_id = purchase.get("plan_id")
             plan = await mega_plans_col.find_one({"plan_id": plan_id})
             days = plan.get("days", 0) if plan else 0
@@ -1335,7 +1332,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 expiry_time = None  # Permanent
 
-            # Save subscription in MongoDB
             await mega_subs_col.update_one(
                 {"user_id": target_user_id},
                 {
@@ -1351,24 +1347,31 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 upsert=True
             )
 
-            # Create single-use unique Telegram invite link
+            # Create single-use unique Telegram invite link for Mega
             mega_group_link = await get_setting("mega_group_link")
-            invite_link = mega_group_link # Fallback
+            invite_link = mega_group_link
             try:
-                target_chat = mega_group_link
-                if not mega_group_link.startswith("https://t.me/+"):
-                    link_obj = await context.bot.create_chat_invite_link(
-                        chat_id=target_chat,
-                        member_limit=1,
-                        creates_join_request=False
-                    )
-                    invite_link = link_obj.invite_link
+                if mega_group_link.startswith("https://t.me/+"):
+                    # Extract channel/chat identifier if stored as handle or ID, or use chat id directly if stored
+                    pass
+                link_obj = await context.bot.create_chat_invite_link(
+                    chat_id=mega_group_link,
+                    member_limit=1,
+                    creates_join_request=False
+                )
+                invite_link = link_obj.invite_link
             except Exception as e:
-                logger.error(f"Failed to create single-use invite link: {e}")
+                logger.error(f"Failed to create single-use invite link for mega: {e}")
+
+            # Save the generated invite link to sub record so we can revoke it later upon expiration
+            await mega_subs_col.update_one(
+                {"user_id": target_user_id},
+                {"$set": {"invite_link": invite_link}}
+            )
 
             success_msg = (
                 "✅ Payment Approved\n\n"
-                "Join Here:\n"
+                "Join Here (Single-Use Link):\n"
                 f"{invite_link}"
             )
             try:
@@ -1405,7 +1408,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Regular Product Approval Flow
+    # Regular Product Approval Flow (Unchanged)
     purchase = await purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
     if not purchase:
         await query.answer("⚠️ This payment has already been processed or does not exist.", show_alert=True)
@@ -1476,32 +1479,36 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
-    """Continuously checks active subscriptions and removes expired users."""
+    """Continuously checks active subscriptions and removes expired users for Mega product."""
     try:
         now = datetime.utcnow()
         cursor = mega_subs_col.find({"status": "active", "expiry_time": {"$ne": None, "$lte": now}})
         async for sub in cursor:
             user_id = sub["user_id"]
+            invite_link_to_revoke = sub.get("invite_link")
             mega_group_link = await get_setting("mega_group_link")
             
             try:
+                # 1. User ko expiry message bhejein
+                expiry_message = (
+                    "⚠️ **Aapki Membership Expire Ho Chuki Hai!**\n\n"
+                    "Aapka plan khatam ho gaya hai aur aapko group se remove kar diya gaya hai. "
+                    "Dobara access paane ke liye naya plan purchase karein."
+                )
+                await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
+                
+                # 2. Group se user ko remove karein aur link revoke karein
                 target_chat = mega_group_link
-                if not target_chat.startswith("https://t.me/+"):
-                    await context.bot.ban_chat_member(chat_id=target_chat, user_id=user_id)
-                    await context.bot.unban_chat_member(chat_id=target_chat, user_id=user_id)
+                await context.bot.ban_chat_member(chat_id=target_chat, user_id=user_id)
+                await context.bot.unban_chat_member(chat_id=target_chat, user_id=user_id)
+                if invite_link_to_revoke:
+                    await context.bot.revoke_chat_invite_link(chat_id=target_chat, invite_link=invite_link_to_revoke)
+                
+                print(f"User {user_id} ko expiry message bhej diya gaya aur remove kar diya gaya.")
             except Exception as e:
-                logger.error(f"Failed to remove expired user {user_id} from group: {e}")
+                logger.error(f"Error processing expiry for user {user_id}: {e}")
 
             await mega_subs_col.update_one({"user_id": user_id}, {"$set": {"status": "expired"}})
-
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="⚠️ Your subscription has expired.",
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as e:
-                logger.error(f"Failed to send expiration notification to {user_id}: {e}")
     except Exception as e:
         logger.error(f"Error in check_expiring_subscriptions job: {e}")
 
