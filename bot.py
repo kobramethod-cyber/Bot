@@ -461,7 +461,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             [InlineKeyboardButton("💰 Change Price", callback_data="mega_change_price_menu"), InlineKeyboardButton("📅 Change Days", callback_data="mega_change_days_menu")],
             [InlineKeyboardButton("🔗 Change Group Chat ID/Link", callback_data="mega_set_link"), InlineKeyboardButton("📝 Change Caption", callback_data="mega_set_caption")],
             [InlineKeyboardButton("🖼 Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("📊 Mega Stats", callback_data="mega_stats")],
-            [InlineKeyboardButton("✏️️ Change Mega Menu Name", callback_data="mega_change_menu_name")],
+            [InlineKeyboardButton("✏ Change Mega Menu Name", callback_data="mega_change_menu_name")],
             [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
         ]
         if query.message.photo:
@@ -627,7 +627,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("⚠️️ You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
@@ -880,7 +880,7 @@ async def admin_set_price_receive(update: Update, context: ContextTypes.DEFAULT_
         await set_setting("price", new_price)
         await update.message.reply_text(f"✅ Global Price Updated Successfully to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("⚠️️ Invalid price. Please send a valid number.")
+        await update.message.reply_text("⚠ Invalid price. Please send a valid number.")
     return ConversationHandler.END
 
 
@@ -946,7 +946,7 @@ async def mega_add_plan_receive(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await update.message.reply_text("⚠️️ Invalid format. Please use: `Name | Price | Days`", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("⚠ Invalid format. Please use: `Name | Price | Days`", parse_mode=ParseMode.HTML)
         return MEGA_ADDING_PLAN
 
     name, price_str, days_str = parts[0], parts[1], parts[2]
@@ -1339,7 +1339,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mega_group_target = await get_setting("mega_group_link")
             invite_link = mega_group_target
             try:
-                # Agar chat id di gayi hai ya link, create_chat_invite_link ko target chat ID chahiye hoti hai
                 link_obj = await context.bot.create_chat_invite_link(
                     chat_id=mega_group_target,
                     member_limit=1,
@@ -1355,9 +1354,11 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             success_msg = (
-                "✅ Payment Approved\n\n"
-                "Join Here (Single-Use Link):\n"
-                f"{invite_link}"
+                "🔐 Here's your exclusive access link to join the premium channel\n\n"
+                f"🔗 {invite_link}\n\n"
+                "This link is valid for only 1 member be used\n\n"
+                "Don't leave this channel. If you leave the channel it means your membership is over. Any condition rejoin penalty Membership Half Amount\n\n"
+                "Your subscription will be active for 1 days"
             )
             try:
                 await context.bot.send_message(
@@ -1470,12 +1471,26 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             user_id = sub["user_id"]
             invite_link_to_revoke = sub.get("invite_link")
             mega_group_target = await get_setting("mega_group_link")
+            plan_name = sub.get("plan_name", "Mega Plan")
+            approval_time = sub.get("approval_time")
+            expiry_time = sub.get("expiry_time")
+            
+            start_date_str = approval_time.strftime("%Y-%m-%d") if approval_time else "N/A"
+            end_date_str = expiry_time.strftime("%Y-%m-%d") if expiry_time else "N/A"
             
             try:
                 expiry_message = (
-                    "⚠️ **Aapki Membership Expire Ho Chuki Hai!**\n\n"
-                    "Aapka plan khatam ho gaya hai aur aapko group se remove kar diya gaya hai. "
-                    "Dobara access paane ke liye naya plan purchase karein."
+                    "📅 **Your Subscription Has Expired**\n\n"
+                    f"Your subscription to **{plan_name}** has expired and you will be removed from the Channel\n\n"
+                    "**Subscription details**\n"
+                    f"• Plan: {plan_name}\n"
+                    f"• Start date: {start_date_str}\n"
+                    f"• End date: {end_date_str}\n\n"
+                    "To continue enjoying our premium content, please renew your Subscription\n"
+                    "1. Use the /start command\n"
+                    "2. Select 'Mega Group Link'\n"
+                    "3. Choose your desired plan\n\n"
+                    "For any questions or assistance, contact our support team"
                 )
                 await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
                 
@@ -1484,7 +1499,7 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                 if invite_link_to_revoke:
                     await context.bot.revoke_chat_invite_link(chat_id=mega_group_target, invite_link=invite_link_to_revoke)
                 
-                print(f"User {user_id} ko expiry message bhej diya gaya aur remove kar diya gaya.")
+                print(f"User {user_id} subscription expired. Notification sent and user removed.")
             except Exception as e:
                 logger.error(f"Error processing expiry for user {user_id}: {e}")
 
