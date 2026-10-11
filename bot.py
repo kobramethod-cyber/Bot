@@ -299,7 +299,6 @@ async def get_formatted_stats_text() -> str:
     total_categories = await products_col.count_documents({})
     current_price = await get_setting("price")
     support_username = await get_setting("support_username")
-    mega_link = await get_setting("mega_group_link")
 
     uptime_seconds = int(time.time() - BOT_START_TIME)
     days, rem = divmod(uptime_seconds, 86400)
@@ -328,17 +327,12 @@ async def get_formatted_stats_text() -> str:
         f"Rᴇᴠᴇɴᴜᴇ\n"
         f"Tᴏᴛᴀʟ : ₹{rev_total}\n"
         f"Tᴏᴅᴀʏ : ₹{rev_today}\n\n"
-        f"Wᴀʟʟᴇᴛ\n"
-        f"Tᴏᴛᴀʟ Bᴀʟᴀɴᴄᴇ : ₹0.00\n"
-        f"Pᴇɴᴅɪɴɢ Tᴏᴘ-Uᴘꜱ : 0\n\n"
         f"Sᴛᴏʀᴇ\n"
         f"Cᴀᴛᴇɢᴏʀɪᴇꜱ : {total_categories} active / {total_categories}\n"
         f"Uᴘɪ Iᴅꜱ : 1 active / 1\n"
         f"Bᴜʏ-Aʟʟ Pʀɪᴄᴇ : ₹{current_price}\n"
         f"Fᴏʀᴄᴇ Jᴏɪɴ : OFF (0)\n"
-        f"Oʀᴅᴇʀꜱ Gʀᴏᴜᴘ : {mega_link}\n"
-        f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n"
-        f"Qʀ Oɴʟʏ Mᴏᴅᴇ : ON\n\n"
+        f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n\n"
         f"Sʏꜱᴛᴇᴍ\n"
         f"Uᴘᴛɪᴍᴇ : {uptime_str}\n"
         f"Dᴀᴛᴀʙᴀꜱᴇ : 536.00 KB\n"
@@ -1588,7 +1582,13 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     users = await users_col.find({}).to_list(length=100000)
-    status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
+    total_users = len(users)
+    
+    if total_users == 0:
+        await update.message.reply_text("⚠️ No users found in database to broadcast.")
+        return ConversationHandler.END
+
+    status_msg = await update.message.reply_text(f"🚀 **Broadcast Started!**\n\nTotal Users: `{total_users}`", parse_mode=ParseMode.MARKDOWN)
 
     photo_file = update.message.photo[-1].file_id if update.message.photo else None
     caption_text = update.message.caption or ""
@@ -1606,21 +1606,67 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     success, fail = 0, 0
     chunk_size = 30
-    for i in range(0, len(users), chunk_size):
+    start_time = time.time()
+    last_update_time = time.time()
+
+    for i in range(0, total_users, chunk_size):
         chunk = users[i:i + chunk_size]
         tasks = [send_msg(user["user_id"]) for user in chunk]
         results = await asyncio.gather(*tasks)
+        
         for res in results:
             if res:
                 success += 1
             else:
                 fail += 1
+        
+        processed = success + fail
+        remaining = total_users - processed
+        
+        current_time = time.time()
+        if current_time - last_update_time >= 3 or processed == total_users:
+            elapsed = current_time - start_time
+            rate = processed / elapsed if elapsed > 0 else 1
+            eta_seconds = int(remaining / rate) if rate > 0 else 0
+            
+            eta_minutes, eta_secs = divmod(eta_seconds, 60)
+            eta_str = f"{eta_minutes}m {eta_secs}s" if eta_minutes > 0 else f"{eta_secs}s"
+            
+            progress_percent = int((processed / total_users) * 100)
+            
+            progress_text = (
+                f"🚀 <b>Broadcast In Progress...</b>\n\n"
+                f"📊 <b>Total Target:</b> <code>{total_users}</code>\n"
+                f"✅ <b>Sent:</b> <code>{success}</code>\n"
+                f"❌ <b>Failed:</b> <code>{fail}</code>\n"
+                f"⏳ <b>Remaining:</b> <code>{remaining}</code>\n"
+                f"📈 <b>Progress:</b> <code>{progress_percent}%</code>\n"
+                f"⏱️ <b>Estimated Time Left:</b> <code>{eta_str}</code>"
+            )
+            try:
+                await status_msg.edit_text(progress_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            last_update_time = current_time
+            
         await asyncio.sleep(0.1)
 
-    await status_msg.edit_text(
-        f"✅ <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
-        parse_mode=ParseMode.HTML,
+    total_time = int(time.time() - start_time)
+    t_min, t_sec = divmod(total_time, 60)
+    time_taken_str = f"{t_min}m {t_sec}s" if t_min > 0 else f"{t_sec}s"
+
+    final_text = (
+        f"✅ <b>Broadcast Completed!</b>\n\n"
+        f"📊 Total Target: <code>{total_users}</code>\n"
+        f"✅ Success Count: <code>{success}</code>\n"
+        f"❌ Failed Count: <code>{fail}</code>\n"
+        f"⏱️ Total Time Taken: <code>{time_taken_str}</code>"
     )
+    try:
+        await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        await update.message.reply_text(final_text, parse_mode=ParseMode.HTML)
+
     return ConversationHandler.END
 
 
