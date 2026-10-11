@@ -298,7 +298,6 @@ async def get_formatted_stats_text() -> str:
 
     total_categories = await products_col.count_documents({})
     current_price = await get_setting("price")
-    group_link = await get_setting("group_link")
     support_username = await get_setting("support_username")
     mega_link = await get_setting("mega_group_link")
 
@@ -837,7 +836,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     elif query.data == "add_product_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("📦 Send product details in this format:\n`Product Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("📦 Send product details in this format:\n`Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
         return ADDING_PRODUCT
 
     elif query.data == "remove_product_menu":
@@ -1558,7 +1557,6 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                 )
                 await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
                 
-                # Numeric chat ID convert string to int agar chat id format negative me ho
                 chat_target = int(mega_group_target) if str(mega_group_target).startswith("-") else mega_group_target
                 await context.bot.ban_chat_member(chat_id=chat_target, user_id=user_id)
                 await context.bot.unban_chat_member(chat_id=chat_target, user_id=user_id)
@@ -1606,7 +1604,6 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception:
             return False
 
-    # Non-blocking parallel execution using asyncio.gather chunks
     success, fail = 0, 0
     chunk_size = 30
     for i in range(0, len(users), chunk_size):
@@ -1618,7 +1615,7 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 success += 1
             else:
                 fail += 1
-        await asyncio.sleep(0.1) # Small pause to prevent hitting flood limits
+        await asyncio.sleep(0.1)
 
     await status_msg.edit_text(
         f"✅ <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
@@ -1726,4 +1723,4 @@ def main():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))) # Agar flask loop ke sath chalana ho
+    main()
