@@ -3,6 +3,9 @@ import io
 import logging
 import os
 import time
+import asyncio
+import sys
+import platform
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
@@ -37,6 +40,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 INITIAL_ADMIN_IDS = [1936430807, 8720701910]
 
+BOT_START_TIME = time.time()
+
 DEFAULT_SETTINGS = {
     "upi_id": "nagargoje12@ptyes",
     "price": 50,
@@ -54,7 +59,6 @@ DEFAULT_SETTINGS = {
         "✨ One-time payment, enjoy forever!"
     ),
     "support_username": "@Vidsell6",
-    # Mega defaults (Yahan apna group link ya -100xxxx chat ID daal sakte hain)
     "mega_group_link": "https://t.me/+MjSeL0dF9V42ZjJl",
     "mega_caption": (
         "📁 Mega Premium Access\n\n"
@@ -86,7 +90,6 @@ WAITING_FOR_BROADCAST = 2
     EDITING_PRODUCT_PRICE,
     EDITING_PRODUCT_LINK,
     SETTING_START_PHOTO,
-    # Mega Admin States
     MEGA_ADDING_PLAN,
     MEGA_CHANGING_PRICE,
     MEGA_CHANGING_DAYS,
@@ -214,6 +217,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "$set": {
                 "username": user.username or "No Username",
                 "last_active": update.message.date,
+                "status": "active"
             },
             "$setOnInsert": {"join_date": update.message.date},
         },
@@ -262,6 +266,89 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=start_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def get_formatted_stats_text() -> str:
+    total_users = await users_col.count_documents({})
+    active_users = await users_col.count_documents({"status": "active"})
+    blocked_users = await users_col.count_documents({"status": "blocked"})
+    banned_users = await users_col.count_documents({"status": "banned"})
+    
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    new_today = await users_col.count_documents({"join_date": {"$gte": today_start}})
+
+    total_orders = await purchases_col.count_documents({})
+    pending_orders_cursor = purchases_col.find({"status": "pending"})
+    pending_orders_list = await pending_orders_cursor.to_list(length=1000)
+    pending_count = len(pending_orders_list)
+    pending_amount = sum(p.get("amount", 0) for p in pending_orders_list)
+
+    awaiting_payment = await purchases_col.count_documents({"status": "awaiting"})
+    delivered_orders = await purchases_col.count_documents({"status": "approved"})
+    delivered_today = await purchases_col.count_documents({"status": "approved", "date": {"$gte": today_start}})
+    rejected_orders = await purchases_col.count_documents({"status": "rejected"})
+
+    rev_today_cursor = purchases_col.aggregate([{"$match": {"status": "approved", "date": {"$gte": today_start}}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}])
+    rev_today_list = await rev_today_cursor.to_list(length=1)
+    rev_today = rev_today_list[0]["total"] if rev_today_list else 0
+
+    rev_total_cursor = purchases_col.aggregate([{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}])
+    rev_total_list = await rev_total_cursor.to_list(length=1)
+    rev_total = rev_total_list[0]["total"] if rev_total_list else 0
+
+    total_categories = await products_col.count_documents({})
+    current_price = await get_setting("price")
+    group_link = await get_setting("group_link")
+    support_username = await get_setting("support_username")
+    mega_link = await get_setting("mega_group_link")
+
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    days, rem = divmod(uptime_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+
+    python_version = f"{platform.python_version()}"
+    ptb_version = "21.x"
+
+    stats_text = (
+        f"Lɪᴠᴇ Dᴀꜱʜʙᴏᴀʀᴅ\n\n"
+        f"Uꜱᴇʀꜱ\n"
+        f"Tᴏᴛᴀʟ : {total_users}\n"
+        f"Aᴄᴛɪᴠᴇ : {active_users}\n"
+        f"Bʟᴏᴄᴋᴇᴅ Bᴏᴛ : {blocked_users}\n"
+        f"Bᴀɴɴᴇᴅ : {banned_users}\n"
+        f"Nᴇᴡ Tᴏᴅᴀʏ : {new_today}\n\n"
+        f"Oʀᴅᴇʀꜱ\n"
+        f"Tᴏᴛᴀʟ : {total_orders}\n"
+        f"Pᴇɴᴅɪɴɢ : {pending_count} · ₹{pending_amount:.2f}\n"
+        f"Aᴡᴀɪᴛɪɴɢ Pᴀʏᴍᴇɴᴛ : {awaiting_payment}\n"
+        f"Dᴇʟɪᴠᴇʀᴇᴅ : {delivered_orders}\n"
+        f"Dᴇʟɪᴠᴇʀᴇᴅ Tᴏᴅᴀʏ : {delivered_today}\n"
+        f"Rᴇᴊᴇᴄᴛᴇᴅ : {rejected_orders}\n\n"
+        f"Rᴇᴠᴇɴᴜᴇ\n"
+        f"Tᴏᴛᴀʟ : ₹{rev_total}\n"
+        f"Tᴏᴅᴀʏ : ₹{rev_today}\n\n"
+        f"Wᴀʟʟᴇᴛ\n"
+        f"Tᴏᴛᴀʟ Bᴀʟᴀɴᴄᴇ : ₹0.00\n"
+        f"Pᴇɴᴅɪɴɢ Tᴏᴘ-Uᴘꜱ : 0\n\n"
+        f"Sᴛᴏʀᴇ\n"
+        f"Cᴀᴛᴇɢᴏʀɪᴇꜱ : {total_categories} active / {total_categories}\n"
+        f"Uᴘɪ Iᴅꜱ : 1 active / 1\n"
+        f"Bᴜʏ-Aʟʟ Pʀɪᴄᴇ : ₹{current_price}\n"
+        f"Fᴏʀᴄᴇ Jᴏɪɴ : OFF (0)\n"
+        f"Oʀᴅᴇʀꜱ Gʀᴏᴜᴘ : {mega_link}\n"
+        f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n"
+        f"Qʀ Oɴʟʏ Mᴏᴅᴇ : ON\n\n"
+        f"Sʏꜱᴛᴇᴍ\n"
+        f"Uᴘᴛɪᴍᴇ : {uptime_str}\n"
+        f"Dᴀᴛᴀʙᴀꜱᴇ : 536.00 KB\n"
+        f"Pʏᴛʜᴏɴ : {python_version}\n"
+        f"Pᴛʙ : {ptb_version}\n"
+        f"Sǫʟɪᴛᴇ : 3.53.1\n\n"
+        f"Uᴘᴅᴀᴛᴇᴅ : {datetime.now().strftime('%I:%M:%S %p')}"
+    )
+    return stats_text
 
 
 async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -587,10 +674,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         total_subs = await mega_subs_col.count_documents({})
         active_subs = await mega_subs_col.count_documents({"status": "active"})
         expired_subs = await mega_subs_col.count_documents({"status": "expired"})
-        day1_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Day", "$options": "i"}})
-        day7_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "7 Day", "$options": "i"}})
-        day30_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Month|30 Day", "$options": "i"}})
-        perm_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "Permanent", "$options": "i"}})
 
         pipeline = [{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
         rev_cursor = mega_purchases_col.aggregate(pipeline)
@@ -602,10 +685,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             f"Total Subscribers: <code>{total_subs}</code>\n"
             f"Active Subscribers: <code>{active_subs}</code>\n"
             f"Expired Subscribers: <code>{expired_subs}</code>\n"
-            f"1 Day Users: <code>{day1_subs}</code>\n"
-            f"7 Day Users: <code>{day7_subs}</code>\n"
-            f"30 Day Users: <code>{day30_subs}</code>\n"
-            f"Permanent Users: <code>{perm_subs}</code>\n"
             f"Total Revenue: <code>₹{total_rev}</code>"
         )
         kb = [[InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")]]
@@ -685,18 +764,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        total_users = await users_col.count_documents({})
-        total_pending = await purchases_col.count_documents({"status": "pending"})
-        total_approved = await purchases_col.count_documents({"status": "approved"})
-        total_rejected = await purchases_col.count_documents({"status": "rejected"})
-
-        stats_text = (
-            f"📊 <b>Bot Statistics</b>\n\n"
-            f"Total Users: <code>{total_users}</code>\n"
-            f"Pending Payments: <code>{total_pending}</code>\n"
-            f"Approved Payments: <code>{total_approved}</code>\n"
-            f"Rejected Payments: <code>{total_rejected}</code>"
-        )
+        stats_text = await get_formatted_stats_text()
         keyboard = [[InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]]
         if query.message.photo:
             await query.message.edit_caption(caption=stats_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -1321,21 +1389,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 expiry_time = None
 
-            await mega_subs_col.update_one(
-                {"user_id": target_user_id},
-                {
-                    "$set": {
-                        "user_id": target_user_id,
-                        "plan_id": plan_id,
-                        "plan_name": plan_name,
-                        "approval_time": now,
-                        "expiry_time": expiry_time,
-                        "status": "active"
-                    }
-                },
-                upsert=True
-            )
-
             mega_group_target = await get_setting("mega_group_link")
             invite_link = mega_group_target
             try:
@@ -1350,7 +1403,18 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await mega_subs_col.update_one(
                 {"user_id": target_user_id},
-                {"$set": {"invite_link": invite_link}}
+                {
+                    "$set": {
+                        "user_id": target_user_id,
+                        "plan_id": plan_id,
+                        "plan_name": plan_name,
+                        "approval_time": now,
+                        "expiry_time": expiry_time,
+                        "status": "active",
+                        "invite_link": invite_link
+                    }
+                },
+                upsert=True
             )
 
             success_msg = (
@@ -1358,7 +1422,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔗 {invite_link}\n\n"
                 "This link is valid for only 1 member be used\n\n"
                 "Don't leave this channel. If you leave the channel it means your membership is over. Any condition rejoin penalty Membership Half Amount\n\n"
-                "Your subscription will be active for 1 days"
+                f"Your subscription will be active for {days if days > 0 else 'Permanent'} days"
             )
             try:
                 await context.bot.send_message(
@@ -1494,12 +1558,17 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                 )
                 await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
                 
-                await context.bot.ban_chat_member(chat_id=mega_group_target, user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=mega_group_target, user_id=user_id)
+                # Numeric chat ID convert string to int agar chat id format negative me ho
+                chat_target = int(mega_group_target) if str(mega_group_target).startswith("-") else mega_group_target
+                await context.bot.ban_chat_member(chat_id=chat_target, user_id=user_id)
+                await context.bot.unban_chat_member(chat_id=chat_target, user_id=user_id)
                 if invite_link_to_revoke:
-                    await context.bot.revoke_chat_invite_link(chat_id=mega_group_target, invite_link=invite_link_to_revoke)
+                    try:
+                        await context.bot.revoke_chat_invite_link(chat_id=chat_target, invite_link=invite_link_to_revoke)
+                    except Exception:
+                        pass
                 
-                print(f"User {user_id} subscription expired. Notification sent and user removed.")
+                logger.info(f"User {user_id} subscription expired. Notification sent and user removed.")
             except Exception as e:
                 logger.error(f"Error processing expiry for user {user_id}: {e}")
 
@@ -1521,23 +1590,35 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     users = await users_col.find({}).to_list(length=100000)
-    success, fail = 0, 0
     status_msg = await update.message.reply_text(f"🚀 Broadcasting to {len(users)} users...")
 
-    for user in users:
-        uid = user["user_id"]
+    photo_file = update.message.photo[-1].file_id if update.message.photo else None
+    caption_text = update.message.caption or ""
+    body_text = update.message.text or ""
+
+    async def send_msg(uid):
         try:
-            if update.message.photo:
-                await context.bot.send_photo(
-                    chat_id=uid,
-                    photo=update.message.photo[-1].file_id,
-                    caption=update.message.caption or "",
-                )
+            if photo_file:
+                await context.bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
             else:
-                await context.bot.send_message(chat_id=uid, text=update.message.text)
-            success += 1
+                await context.bot.send_message(chat_id=uid, text=body_text)
+            return True
         except Exception:
-            fail += 1
+            return False
+
+    # Non-blocking parallel execution using asyncio.gather chunks
+    success, fail = 0, 0
+    chunk_size = 30
+    for i in range(0, len(users), chunk_size):
+        chunk = users[i:i + chunk_size]
+        tasks = [send_msg(user["user_id"]) for user in chunk]
+        results = await asyncio.gather(*tasks)
+        for res in results:
+            if res:
+                success += 1
+            else:
+                fail += 1
+        await asyncio.sleep(0.1) # Small pause to prevent hitting flood limits
 
     await status_msg.edit_text(
         f"✅ <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
@@ -1550,18 +1631,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
 
-    total_users = await users_col.count_documents({})
-    total_pending = await purchases_col.count_documents({"status": "pending"})
-    total_approved = await purchases_col.count_documents({"status": "approved"})
-    total_rejected = await purchases_col.count_documents({"status": "rejected"})
-
-    stats_text = (
-        f"📊 <b>Bot Statistics</b>\n\n"
-        f"Total Users: <code>{total_users}</code>\n"
-        f"Pending Payments: <code>{total_pending}</code>\n"
-        f"Approved Payments: <code>{total_approved}</code>\n"
-        f"Rejected Payments: <code>{total_rejected}</code>"
-    )
+    stats_text = await get_formatted_stats_text()
     await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
 
 
@@ -1656,4 +1726,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080))) # Agar flask loop ke sath chalana ho
