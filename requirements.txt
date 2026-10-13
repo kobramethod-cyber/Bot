@@ -1,7 +1,7 @@
-python-telegram-bot
-motor
-pymongo
-qrcode
-Pillow
 flask
-dnspython
+pymongo
+motor
+python-telegram-bot
+qrcode
+pillow
+requests
