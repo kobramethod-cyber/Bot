@@ -6,6 +6,8 @@ import time
 import asyncio
 import sys
 import platform
+import random
+import requests
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
@@ -38,6 +40,8 @@ logger = logging.getLogger(__name__)
 # Environment Variables & Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
+BHARATPE_COOKIE = os.getenv("BHARATPE_COOKIE")
+MERCHANT_ID = os.getenv("MERCHANT_ID", "36591611")
 INITIAL_ADMIN_IDS = [1936430807, 8720701910]
 
 BOT_START_TIME = time.time()
@@ -133,6 +137,41 @@ def keep_alive():
     t.start()
 
 
+def get_user_mention(user) -> str:
+    if user.username:
+        return f"@{user.username}"
+    first_name = user.first_name or "User"
+    return f'<a href="tg://user?id={user.id}">{first_name}</a>'
+
+
+def verify_bharatpe_transaction(expected_amount: float) -> bool:
+    if not BHARATPE_COOKIE or not MERCHANT_ID:
+        logger.warning("BharatPe cookie or Merchant ID missing!")
+        return False
+        
+    url = f"https://merchantweb.bharatpe.com/api/v1/merchant/transactions?merchantId={MERCHANT_ID}&limit=15"
+    headers = {
+        "Cookie": BHARATPE_COOKIE,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            transactions = data.get("data", {}).get("transactions", [])
+            for txn in transactions:
+                txn_amount = float(txn.get("amount", 0))
+                if abs(txn_amount - float(expected_amount)) < 0.01:
+                    return True
+        else:
+            logger.error(f"BharatPe API Error: Status {response.status_code}")
+    except Exception as e:
+        logger.error(f"Error verifying BharatPe transaction: {e}")
+        
+    return False
+
+
 async def is_admin(user_id: int) -> bool:
     if user_id in INITIAL_ADMIN_IDS:
         return True
@@ -191,8 +230,43 @@ async def initialize_settings():
             await mega_plans_col.update_one({"plan_id": p["plan_id"]}, {"$set": p}, upsert=True)
 
 
-def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
-    upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR"
+async def notify_admins_expired_link(context: ContextTypes.DEFAULT_TYPE, product_name: str, old_link: str):
+    alert_text = (
+        f"⚠️ <b>Link Expired / Invalid Alert!</b>\n\n"
+        f"📦 Product Name: <b>{product_name}</b>\n"
+        f"🔗 Old Link: <code>{old_link}</code>\n\n"
+        f"Please update the product invite link from the admin panel."
+    )
+    all_admins = INITIAL_ADMIN_IDS.copy()
+    async for adm in admins_col.find({}):
+        if adm["user_id"] not in all_admins:
+            all_admins.append(adm["user_id"])
+
+    for admin_id in all_admins:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=alert_text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Failed to alert admin {admin_id}: {e}")
+
+
+async def verify_link_and_get_valid(context: ContextTypes.DEFAULT_TYPE, product_name: str, group_link: str) -> str:
+    if not group_link:
+        await notify_admins_expired_link(context, product_name, "No Link Configured")
+        return group_link
+
+    if group_link.startswith("https://t.me/+") or group_link.startswith("https://t.me/joinchat/"):
+        try:
+            preview = await context.bot.get_chat_invite_link(chat_id=group_link, invite_link=group_link)
+            if preview.is_revoked or preview.is_primary is False:
+                await notify_admins_expired_link(context, product_name, group_link)
+        except Exception as e:
+            logger.warning(f"Unable to check invite link {group_link}: {e}")
+            await notify_admins_expired_link(context, product_name, group_link)
+    return group_link
+
+
+def generate_upi_qr(upi_id: str, amount: float, name: str = "Desi Group"):
+    upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount:.2f}&cu=INR"
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -311,7 +385,7 @@ async def get_formatted_stats_text() -> str:
 
     stats_text = (
         f"Lɪᴠᴇ Dᴀꜱʜʙᴏᴀʀᴅ\n\n"
-        f"Uꜱᴇʀꜱ\n"
+        f"UꜱᴇRꜱ\n"
         f"Tᴏᴛᴀʟ : {total_users}\n"
         f"Aᴄᴛɪᴠᴇ : {active_users}\n"
         f"Bʟᴏᴄᴋᴇᴅ Bᴏᴛ : {blocked_users}\n"
@@ -492,19 +566,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
 
         p_name = plan.get("name", "Mega Plan")
-        p_price = plan.get("price", 100)
+        base_price = float(plan.get("price", 100))
+        unique_paise = random.randint(1, 99) / 100.0
+        final_price = round(base_price + unique_paise, 2)
+        
         current_upi = await get_setting("upi_id")
 
-        existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
-        if existing_pending:
-            await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
-            return ConversationHandler.END
-
-        qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}")
+        qr_bio = generate_upi_qr(current_upi, final_price, name=f"Mega {p_name}")
         payment_text = (
             "✦ <b>MEGA PAYMENT</b>\n\n"
             f"📦 Plan: {p_name}\n"
-            f"🔹 Amount: ₹{p_price}\n"
+            f"🔹 Exact Amount to Pay: <b>₹{final_price:.2f}</b>\n"
+            f"⚠️ <i>Please pay the EXACT amount above for Instant Auto-Verification!</i>\n"
             f"🔹 Validity: {p_name}\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -517,7 +590,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         context.user_data["mega_selected_plan_id"] = plan_id
         context.user_data["mega_selected_plan_name"] = p_name
-        context.user_data["mega_selected_plan_price"] = p_price
+        context.user_data["mega_selected_plan_price"] = final_price
 
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mega_access_menu")]]
 
@@ -694,19 +767,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             product = await products_col.find_one({"product_id": "default"})
         
         prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
-        current_price = product.get("price", await get_setting("price")) if product else await get_setting("price")
+        base_price = float(product.get("price", await get_setting("price")) if product else await get_setting("price"))
+        unique_paise = random.randint(1, 99) / 100.0
+        final_price = round(base_price + unique_paise, 2)
+
         current_upi = await get_setting("upi_id")
 
-        existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
-        if existing_pending:
-            await query.message.reply_text("⚠ You already have a payment verification pending with admins.")
-            return ConversationHandler.END
-
-        qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
+        qr_bio = generate_upi_qr(current_upi, final_price, name=prod_name)
         payment_text = (
             "✦ <b>PREMIUM PAYMENT</b>\n\n"
             f"📦 Product: {prod_name}\n"
-            f"🔹 Amount: ₹{current_price}\n"
+            f"🔹 Exact Amount to Pay: <b>₹{final_price:.2f}</b>\n"
+            f"⚠️ <i>Please pay the EXACT amount above for Instant Auto-Verification!</i>\n"
             "🔹 Validity: Lifetime\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -719,7 +791,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         context.user_data["selected_product_id"] = prod_id
         context.user_data["selected_product_name"] = prod_name
-        context.user_data["selected_product_price"] = current_price
+        context.user_data["selected_product_price"] = final_price
 
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
 
@@ -1206,55 +1278,187 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user = update.effective_user
     photo_id = update.message.photo[-1].file_id
-    username = f"@{user.username}" if user.username else "No Username"
+    user_mention = get_user_mention(user)
+    support_username = await get_setting("support_username")
 
     mega_plan_id = context.user_data.get("mega_selected_plan_id")
     if mega_plan_id:
-        existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
-        if existing_pending:
-            await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
-            return ConversationHandler.END
-
         plan = await mega_plans_col.find_one({"plan_id": mega_plan_id})
         if not plan:
             plan = {"name": "Mega Plan", "price": 100, "days": 0}
 
         p_name = plan.get("name", "Mega Plan")
-        p_price = plan.get("price", 100)
+        p_price = float(context.user_data.get("mega_selected_plan_price", plan.get("price", 100)))
 
+        await update.message.reply_text("🔍 Verifying your payment automatically via BharatPe...")
+        is_verified = verify_bharatpe_transaction(p_price)
+
+        if is_verified:
+            now = datetime.utcnow()
+            days = plan.get("days", 0)
+            expiry_time = now + timedelta(days=days) if days > 0 else None
+
+            mega_group_target = await get_setting("mega_group_link")
+            invite_link = await verify_link_and_get_valid(context, f"Mega Access ({p_name})", mega_group_target)
+            try:
+                link_obj = await context.bot.create_chat_invite_link(
+                    chat_id=mega_group_target,
+                    member_limit=1,
+                    creates_join_request=False
+                )
+                invite_link = link_obj.invite_link
+            except Exception as e:
+                logger.error(f"Failed to create invite link: {e}")
+
+            await mega_subs_col.update_one(
+                {"user_id": user.id},
+                {
+                    "$set": {
+                        "user_id": user.id,
+                        "plan_id": mega_plan_id,
+                        "plan_name": p_name,
+                        "approval_time": now,
+                        "expiry_time": expiry_time,
+                        "status": "active",
+                        "invite_link": invite_link
+                    }
+                },
+                upsert=True
+            )
+
+            await mega_purchases_col.insert_one({
+                "user_id": user.id,
+                "username": user_mention,
+                "plan_id": mega_plan_id,
+                "plan_name": p_name,
+                "amount": p_price,
+                "status": "approved_auto",
+                "date": update.message.date,
+            })
+
+            success_msg = (
+                "✅ <b>Payment Verified Automatically!</b>\n\n"
+                f"Hello {user_mention},\n\n"
+                "🔐 Here's your exclusive access link to join the channel:\n\n"
+                f"🔗 {invite_link}\n\n"
+                "This link is valid for 1 member only."
+            )
+            await update.message.reply_text(success_msg, parse_mode=ParseMode.HTML)
+            context.user_data.pop("mega_selected_plan_id", None)
+            return ConversationHandler.END
+
+        else:
+            purchase_doc = {
+                "user_id": user.id,
+                "username": user_mention,
+                "plan_id": mega_plan_id,
+                "plan_name": p_name,
+                "amount": p_price,
+                "status": "pending",
+                "date": update.message.date,
+            }
+            await mega_purchases_col.insert_one(purchase_doc)
+
+            review_msg = (
+                "✅ <b>Payment Verification Under Review</b>\n\n"
+                f"Hello {user_mention},\n\n"
+                "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
+                "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
+                f"👤 Admin: {support_username} ⏳ Status: Pending Verification\n\n"
+                "Thank you for your patience and cooperation! 🙏"
+            )
+            await update.message.reply_text(review_msg, parse_mode=ParseMode.HTML)
+
+            admin_keyboard = [[
+                InlineKeyboardButton("✅ Approve", callback_data=f"megaapprove_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"megareject_{user.id}"),
+            ]]
+            forward_caption = (
+                f"🔔 <b>New Mega Payment Review (Auto-Check Failed)</b>\n\n"
+                f"👤 User: {user_mention} (ID: <code>{user.id}</code>)\n"
+                f"📦 Plan: {p_name}\n"
+                f"💰 Amount Expected: ₹{p_price:.2f}"
+            )
+            context.user_data.pop("mega_selected_plan_id", None)
+
+            all_admins = INITIAL_ADMIN_IDS.copy()
+            async for adm in admins_col.find({}):
+                if adm["user_id"] not in all_admins:
+                    all_admins.append(adm["user_id"])
+
+            for admin_id in all_admins:
+                try:
+                    await context.bot.send_photo(chat_id=admin_id, photo=photo_id, caption=forward_caption, reply_markup=InlineKeyboardMarkup(admin_keyboard), parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+            return ConversationHandler.END
+
+    prod_id = context.user_data.get("selected_product_id", "default")
+    product = await products_col.find_one({"product_id": prod_id})
+    if not product:
+        product = await products_col.find_one({"product_id": "default"})
+
+    prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
+    current_price = float(context.user_data.get("selected_product_price", product.get("price", await get_setting("price")) if product else await get_setting("price")))
+    raw_group_link = product.get("group_link") if product and product.get("group_link") else await get_setting("group_link")
+    group_link = await verify_link_and_get_valid(context, prod_name, raw_group_link)
+
+    await update.message.reply_text("🔍 Verifying your payment automatically via BharatPe...")
+    is_verified = verify_bharatpe_transaction(current_price)
+
+    if is_verified:
+        await purchases_col.insert_one({
+            "user_id": user.id,
+            "username": user_mention,
+            "product_id": prod_id,
+            "product_name": prod_name,
+            "amount": current_price,
+            "status": "approved_auto",
+            "date": update.message.date,
+        })
+
+        success_msg = (
+            "✅ <b>Payment Verified Automatically!</b>\n\n"
+            f"Hello {user_mention},\n\n"
+            "Thank you for your payment 💕\n\n"
+            "🔗 Your private channel/product link 👇\n"
+            f"{group_link}"
+        )
+        await update.message.reply_text(success_msg, parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    else:
         purchase_doc = {
             "user_id": user.id,
-            "username": username,
-            "plan_id": mega_plan_id,
-            "plan_name": p_name,
-            "amount": p_price,
+            "username": user_mention,
+            "product_id": prod_id,
+            "product_name": prod_name,
+            "amount": current_price,
             "status": "pending",
             "date": update.message.date,
         }
-        await mega_purchases_col.insert_one(purchase_doc)
+        await purchases_col.insert_one(purchase_doc)
 
-        await update.message.reply_text(
-            "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
-            parse_mode=ParseMode.HTML,
+        review_msg = (
+            "✅ <b>Payment Verification Under Review</b>\n\n"
+            f"Hello {user_mention},\n\n"
+            "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
+            "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
+            f"👤 Admin: {support_username} ⏳ Status: Pending Verification\n\n"
+            "Thank you for your patience and cooperation! 🙏"
         )
+        await update.message.reply_text(review_msg, parse_mode=ParseMode.HTML)
 
-        admin_keyboard = [
-            [
-                InlineKeyboardButton("✅ Approve", callback_data=f"megaapprove_{user.id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"megareject_{user.id}"),
-            ]
-        ]
-
+        admin_keyboard = [[
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}"),
+        ]]
         forward_caption = (
-            f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
-            f"👤 User ID: <code>{user.id}</code>\n"
-            f"🔗 Username: {username}\n"
-            f"📦 Plan: {p_name}\n"
-            f"💰 Amount: ₹{p_price}\n\n"
-            f"Please check the screenshot below:"
+            f"🔔 <b>New Payment Review (Auto-Check Failed)</b>\n\n"
+            f"👤 User: {user_mention} (ID: <code>{user.id}</code>)\n"
+            f"📦 Product: {prod_name}\n"
+            f"💰 Amount Expected: ₹{current_price:.2f}"
         )
-
-        context.user_data.pop("mega_selected_plan_id", None)
 
         all_admins = INITIAL_ADMIN_IDS.copy()
         async for adm in admins_col.find({}):
@@ -1263,79 +1467,9 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         for admin_id in all_admins:
             try:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=photo_id,
-                    caption=forward_caption,
-                    reply_markup=InlineKeyboardMarkup(admin_keyboard),
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as e:
-                logger.error(f"Failed to forward mega screenshot to admin {admin_id}: {e}")
-
-        return ConversationHandler.END
-
-    existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
-    if existing_pending:
-        await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
-        return ConversationHandler.END
-    
-    prod_id = context.user_data.get("selected_product_id", "default")
-    product = await products_col.find_one({"product_id": prod_id})
-    if not product:
-        product = await products_col.find_one({"product_id": "default"})
-
-    prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
-    current_price = product.get("price", await get_setting("price")) if product else await get_setting("price")
-
-    purchase_doc = {
-        "user_id": user.id,
-        "username": username,
-        "product_id": prod_id,
-        "product_name": prod_name,
-        "amount": current_price,
-        "status": "pending",
-        "date": update.message.date,
-    }
-    await purchases_col.insert_one(purchase_doc)
-
-    await update.message.reply_text(
-        "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
-        parse_mode=ParseMode.HTML,
-    )
-
-    admin_keyboard = [
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}"),
-        ]
-    ]
-
-    forward_caption = (
-        f"🔔 <b>New Payment Verification Request!</b>\n\n"
-        f"👤 User ID: <code>{user.id}</code>\n"
-        f"🔗 Username: {username}\n"
-        f"📦 Product: {prod_name}\n"
-        f"💰 Amount: ₹{current_price}\n\n"
-        f"Please check the screenshot below:"
-    )
-
-    all_admins = INITIAL_ADMIN_IDS.copy()
-    async for adm in admins_col.find({}):
-        if adm["user_id"] not in all_admins:
-            all_admins.append(adm["user_id"])
-
-    for admin_id in all_admins:
-        try:
-            await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=photo_id,
-                caption=forward_caption,
-                reply_markup=InlineKeyboardMarkup(admin_keyboard),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            logger.error(f"Failed to forward screenshot to admin {admin_id}: {e}")
+                await context.bot.send_photo(chat_id=admin_id, photo=photo_id, caption=forward_caption, reply_markup=InlineKeyboardMarkup(admin_keyboard), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
     return ConversationHandler.END
 
@@ -1352,6 +1486,14 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data[0]
     target_user_id = int(data[1])
 
+    target_user_doc = await users_col.find_one({"user_id": target_user_id})
+    if target_user_doc and target_user_doc.get("username") and target_user_doc.get("username") != "No Username":
+        user_mention = f"@{target_user_doc.get('username')}"
+    else:
+        user_mention = f'<a href="tg://user?id={target_user_id}">User</a>'
+
+    support_username = await get_setting("support_username")
+
     if action in ["megaapprove", "megareject"]:
         purchase = await mega_purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
         if not purchase:
@@ -1363,7 +1505,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         admin_name = query.from_user.first_name or "Admin"
-        support_username = await get_setting("support_username")
 
         if action == "megaapprove":
             await mega_purchases_col.update_one(
@@ -1377,13 +1518,10 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             plan_name = purchase.get("plan_name", "Mega Plan")
 
             now = datetime.utcnow()
-            if days > 0:
-                expiry_time = now + timedelta(days=days)
-            else:
-                expiry_time = None
+            expiry_time = now + timedelta(days=days) if days > 0 else None
 
             mega_group_target = await get_setting("mega_group_link")
-            invite_link = mega_group_target
+            invite_link = await verify_link_and_get_valid(context, f"Mega Access ({plan_name})", mega_group_target)
             try:
                 link_obj = await context.bot.create_chat_invite_link(
                     chat_id=mega_group_target,
@@ -1411,18 +1549,16 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             success_msg = (
-                "🔐 Here's your exclusive access link to join the premium channel\n\n"
+                f"Hello {user_mention},\n\n"
+                "🔐 Here's your exclusive access link to join the premium channel:\n\n"
                 f"🔗 {invite_link}\n\n"
-                "This link is valid for only 1 member be used\n\n"
-                "Don't leave this channel. If you leave the channel it means your membership is over. Any condition rejoin penalty Membership Half Amount\n\n"
-                f"Your subscription will be active for {days if days > 0 else 'Permanent'} days"
+                "This link is valid for only 1 member to use.\n\n"
+                f"Your subscription will be active for {days if days > 0 else 'Permanent'} days."
             )
             try:
-                await context.bot.send_message(
-                    chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML
-                )
-            except Exception as e:
-                logger.error(f"Could not message user {target_user_id}: {e}")
+                await context.bot.send_message(chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
             await query.message.edit_caption(
                 caption=query.message.caption + f"\n\n🟢 <b>MEGA APPROVED by {admin_name}</b>",
@@ -1436,13 +1572,17 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"$set": {"status": "rejected"}},
             )
 
-            reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+            reject_msg = (
+                "⚠️ <b>PAYMENT VERIFICATION FAILED</b>\n\n"
+                f"Dear {user_mention},\n\n"
+                f"Unfortunately, your payment could not be verified. Please contact our Admin {support_username} to resolve this issue and receive further assistance.\n\n"
+                f"📌 Status: Verification Failed 👤 Contact Admin: {support_username}\n\n"
+                "Thank you for your patience and cooperation. 🙏"
+            )
             try:
-                await context.bot.send_message(
-                    chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
-                )
-            except Exception as e:
-                logger.error(f"Could not message user {target_user_id}: {e}")
+                await context.bot.send_message(chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
             await query.message.edit_caption(
                 caption=query.message.caption + f"\n\n🔴 <b>MEGA REJECTED by {admin_name}</b>",
@@ -1461,14 +1601,11 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     admin_name = query.from_user.first_name or "Admin"
-    support_username = await get_setting("support_username")
-
     prod_id = purchase.get("product_id", "default")
     product = await products_col.find_one({"product_id": prod_id})
-    if product and product.get("group_link"):
-        group_link = product.get("group_link")
-    else:
-        group_link = await get_setting("group_link")
+    prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
+    raw_group_link = product.get("group_link") if product and product.get("group_link") else await get_setting("group_link")
+    group_link = await verify_link_and_get_valid(context, prod_name, raw_group_link)
 
     if action == "approve":
         await purchases_col.update_one(
@@ -1477,21 +1614,17 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         success_msg = (
-            "✅ Payment Received Successfully!\n\n"
-            "Hi 👋\n\n"
+            "✅ <b>Payment Received Successfully!</b>\n\n"
+            f"Dear {user_mention},\n\n"
             "Thank you for your payment 💕\n\n"
             "🔗 Your private channel/product link 👇\n"
             f"{group_link}\n\n"
-            "If you face any issue, feel free to message me anytime 😊\n\n"
-            f"👉 {support_username}\n\n"
-            "🙏 Thanks for trusting us!"
+            f"👉 Admin Support: {support_username}"
         )
         try:
-            await context.bot.send_message(
-                chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Could not message user {target_user_id}: {e}")
+            await context.bot.send_message(chat_id=target_user_id, text=success_msg, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
         await query.message.edit_caption(
             caption=query.message.caption + f"\n\n🟢 <b>APPROVED by {admin_name}</b>",
@@ -1505,13 +1638,17 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"status": "rejected"}},
         )
 
-        reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+        reject_msg = (
+            "⚠️ <b>PAYMENT VERIFICATION FAILED</b>\n\n"
+            f"Dear {user_mention},\n\n"
+            f"Unfortunately, your payment could not be verified. Please contact our Admin {support_username} to resolve this issue and receive further assistance.\n\n"
+            f"📌 Status: Verification Failed 👤 Contact Admin: {support_username}\n\n"
+            "Thank you for your patience and cooperation. 🙏"
+        )
         try:
-            await context.bot.send_message(
-                chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            logger.error(f"Could not message user {target_user_id}: {e}")
+            await context.bot.send_message(chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
         await query.message.edit_caption(
             caption=query.message.caption + f"\n\n🔴 <b>REJECTED by {admin_name}</b>",
@@ -1538,16 +1675,7 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             try:
                 expiry_message = (
                     "📅 **Your Subscription Has Expired**\n\n"
-                    f"Your subscription to **{plan_name}** has expired and you will be removed from the Channel\n\n"
-                    "**Subscription details**\n"
-                    f"• Plan: {plan_name}\n"
-                    f"• Start date: {start_date_str}\n"
-                    f"• End date: {end_date_str}\n\n"
-                    "To continue enjoying our premium content, please renew your Subscription\n"
-                    "1. Use the /start command\n"
-                    "2. Select 'Mega Group Link'\n"
-                    "3. Choose your desired plan\n\n"
-                    "For any questions or assistance, contact our support team"
+                    f"Your subscription to **{plan_name}** has expired.\n"
                 )
                 await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
                 
@@ -1559,8 +1687,6 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.revoke_chat_invite_link(chat_id=chat_target, invite_link=invite_link_to_revoke)
                     except Exception:
                         pass
-                
-                logger.info(f"User {user_id} subscription expired. Notification sent and user removed.")
             except Exception as e:
                 logger.error(f"Error processing expiry for user {user_id}: {e}")
 
@@ -1569,10 +1695,21 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in check_expiring_subscriptions job: {e}")
 
 
+async def check_all_product_links_periodically(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        products = await products_col.find({}).to_list(length=100)
+        for prod in products:
+            p_name = prod.get("name", "Product")
+            p_link = prod.get("group_link")
+            if p_link:
+                await verify_link_and_get_valid(context, p_name, p_link)
+    except Exception as e:
+        logger.error(f"Error checking product links: {e}")
+
+
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
-
     await update.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
     return WAITING_FOR_BROADCAST
 
@@ -1583,13 +1720,11 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     users = await users_col.find({}).to_list(length=100000)
     total_users = len(users)
-    
     if total_users == 0:
-        await update.message.reply_text("⚠️ No users found in database to broadcast.")
+        await update.message.reply_text("⚠️ No users found in database.")
         return ConversationHandler.END
 
     status_msg = await update.message.reply_text(f"🚀 **Broadcast Started!**\n\nTotal Users: `{total_users}`", parse_mode=ParseMode.MARKDOWN)
-
     photo_file = update.message.photo[-1].file_id if update.message.photo else None
     caption_text = update.message.caption or ""
     body_text = update.message.text or ""
@@ -1605,75 +1740,21 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return False
 
     success, fail = 0, 0
-    chunk_size = 30
-    start_time = time.time()
-    last_update_time = time.time()
+    for user in users:
+        if await send_msg(user["user_id"]):
+            success += 1
+        else:
+            fail += 1
+        await asyncio.sleep(0.05)
 
-    for i in range(0, total_users, chunk_size):
-        chunk = users[i:i + chunk_size]
-        tasks = [send_msg(user["user_id"]) for user in chunk]
-        results = await asyncio.gather(*tasks)
-        
-        for res in results:
-            if res:
-                success += 1
-            else:
-                fail += 1
-        
-        processed = success + fail
-        remaining = total_users - processed
-        
-        current_time = time.time()
-        if current_time - last_update_time >= 3 or processed == total_users:
-            elapsed = current_time - start_time
-            rate = processed / elapsed if elapsed > 0 else 1
-            eta_seconds = int(remaining / rate) if rate > 0 else 0
-            
-            eta_minutes, eta_secs = divmod(eta_seconds, 60)
-            eta_str = f"{eta_minutes}m {eta_secs}s" if eta_minutes > 0 else f"{eta_secs}s"
-            
-            progress_percent = int((processed / total_users) * 100)
-            
-            progress_text = (
-                f"🚀 <b>Broadcast In Progress...</b>\n\n"
-                f"📊 <b>Total Target:</b> <code>{total_users}</code>\n"
-                f"✅ <b>Sent:</b> <code>{success}</code>\n"
-                f"❌ <b>Failed:</b> <code>{fail}</code>\n"
-                f"⏳ <b>Remaining:</b> <code>{remaining}</code>\n"
-                f"📈 <b>Progress:</b> <code>{progress_percent}%</code>\n"
-                f"⏱️ <b>Estimated Time Left:</b> <code>{eta_str}</code>"
-            )
-            try:
-                await status_msg.edit_text(progress_text, parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-            last_update_time = current_time
-            
-        await asyncio.sleep(0.1)
-
-    total_time = int(time.time() - start_time)
-    t_min, t_sec = divmod(total_time, 60)
-    time_taken_str = f"{t_min}m {t_sec}s" if t_min > 0 else f"{t_sec}s"
-
-    final_text = (
-        f"✅ <b>Broadcast Completed!</b>\n\n"
-        f"📊 Total Target: <code>{total_users}</code>\n"
-        f"✅ Success Count: <code>{success}</code>\n"
-        f"❌ Failed Count: <code>{fail}</code>\n"
-        f"⏱️ Total Time Taken: <code>{time_taken_str}</code>"
-    )
-    try:
-        await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
-    except Exception:
-        await update.message.reply_text(final_text, parse_mode=ParseMode.HTML)
-
+    final_text = f"✅ **Broadcast Completed!**\n\nSuccess: `{success}`\nFailed: `{fail}`"
+    await status_msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
     return ConversationHandler.END
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
-
     stats_text = await get_formatted_stats_text()
     await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
 
@@ -1706,7 +1787,8 @@ def main():
         await initialize_settings()
         if application.job_queue:
             application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
-        logger.info("Bot is up and running...")
+            application.job_queue.run_repeating(check_all_product_links_periodically, interval=3600, first=60)
+        logger.info("Bot is up and running with unique amount auto-verification...")
 
     app.post_init = post_init
 
