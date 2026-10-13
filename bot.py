@@ -3,6 +3,9 @@ import io
 import logging
 import os
 import time
+import asyncio
+import sys
+import platform
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
@@ -37,34 +40,35 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 INITIAL_ADMIN_IDS = [1936430807, 8720701910]
 
+BOT_START_TIME = time.time()
+
 DEFAULT_SETTINGS = {
     "upi_id": "nagargoje12@ptyes",
     "price": 50,
     "group_link": "https://t.me/+H_y0MBr_c0g2ZDk1",
     "welcome_text": (
-        "âœ¨ Welcome to Premium Access Hub âœ¨\n\n"
-        "ðŸ”¥ Buy Premium Groups in just â‚¹{price}!\n\n"
-        "ðŸ“‚ Resources:\n"
+        "✨ Welcome to Premium Access Hub ✨\n\n"
+        "🔥 Buy Premium Groups in just ₹{price}!\n\n"
+        "📂 Resources:\n"
         "https://t.me/+h7qBjBXj13djMWI1\n"
         "https://t.me/+bxjfe4zWwqQ4ZjY0\n\n"
-        "ðŸ’Ž Features:\n"
-        "â€¢ â™¾ï¸ Lifetime Permanent Access\n"
-        "â€¢ ðŸ“ All Premium Categories included\n"
-        "â€¢ ðŸš€ Instant delivery after verification\n\n"
-        "âœ¨ One-time payment, enjoy forever!"
+        "💎 Features:\n"
+        "• ♾️ Lifetime Permanent Access\n"
+        "• 📁 All Premium Categories included\n"
+        "• 🚀 Instant delivery after verification\n\n"
+        "✨ One-time payment, enjoy forever!"
     ),
     "support_username": "@Vidsell6",
-    # Mega defaults (Yahan apna group link ya -100xxxx chat ID daal sakte hain)
     "mega_group_link": "https://t.me/+MjSeL0dF9V42ZjJl",
     "mega_caption": (
-        "ðŸ“ Mega Premium Access\n\n"
+        "📁 Mega Premium Access\n\n"
         "Choose Your Plan:\n\n"
-        "ðŸ”¥ 1 Day - â‚¹70\n"
-        "ðŸ”¥ 1 Month - â‚¹300\n"
-        "ðŸ”¥ Permanent - â‚¹800\n\n"
+        "🔥 1 Day - ₹70\n"
+        "🔥 1 Month - ₹300\n"
+        "🔥 Permanent - ₹800\n\n"
         "After payment send screenshot."
     ),
-    "mega_menu_name": "ðŸ“ Mega Access",
+    "mega_menu_name": "📁 Mega Access",
 }
 
 WAITING_FOR_SCREENSHOT = 1
@@ -86,7 +90,6 @@ WAITING_FOR_BROADCAST = 2
     EDITING_PRODUCT_PRICE,
     EDITING_PRODUCT_LINK,
     SETTING_START_PHOTO,
-    # Mega Admin States
     MEGA_ADDING_PLAN,
     MEGA_CHANGING_PRICE,
     MEGA_CHANGING_DAYS,
@@ -155,7 +158,7 @@ async def get_mega_menu_name() -> str:
             return doc["value"]
     except Exception as e:
         logger.error(f"Error fetching mega menu name: {e}")
-    return DEFAULT_SETTINGS.get("mega_menu_name", "ðŸ“ Mega Access")
+    return DEFAULT_SETTINGS.get("mega_menu_name", "📁 Mega Access")
 
 
 async def initialize_settings():
@@ -214,6 +217,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "$set": {
                 "username": user.username or "No Username",
                 "last_active": update.message.date,
+                "status": "active"
             },
             "$setOnInsert": {"join_date": update.message.date},
         },
@@ -232,19 +236,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for prod in products:
             p_id = prod.get("product_id", "default")
             p_name = prod.get("name", "Premium Access")
-            keyboard.append([InlineKeyboardButton(f"ðŸ›’ Buy {p_name}", callback_data=f"buy_{p_id}")])
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
     else:
-        keyboard.append([InlineKeyboardButton("ðŸ›’ Buy Premium", callback_data="buy_default")])
+        keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
     keyboard.append([InlineKeyboardButton(mega_button_text, callback_data="mega_access_menu")])
 
     keyboard.append([
-        InlineKeyboardButton("â“ How To Buy", callback_data="how"),
-        InlineKeyboardButton("ðŸ†˜ Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
+        InlineKeyboardButton("❓ How To Buy", callback_data="how"),
+        InlineKeyboardButton("🆘 Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
     ])
 
     if await is_admin(user.id):
-        keyboard.append([InlineKeyboardButton("ðŸ‘‘ Admin Panel", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
     start_photo_doc = await settings_col.find_one({"key": "start_photo"})
     if start_photo_doc and "file_id" in start_photo_doc:
@@ -264,6 +268,82 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def get_formatted_stats_text() -> str:
+    total_users = await users_col.count_documents({})
+    active_users = await users_col.count_documents({"status": "active"})
+    blocked_users = await users_col.count_documents({"status": "blocked"})
+    banned_users = await users_col.count_documents({"status": "banned"})
+    
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    new_today = await users_col.count_documents({"join_date": {"$gte": today_start}})
+
+    total_orders = await purchases_col.count_documents({})
+    pending_orders_cursor = purchases_col.find({"status": "pending"})
+    pending_orders_list = await pending_orders_cursor.to_list(length=1000)
+    pending_count = len(pending_orders_list)
+    pending_amount = sum(p.get("amount", 0) for p in pending_orders_list)
+
+    awaiting_payment = await purchases_col.count_documents({"status": "awaiting"})
+    delivered_orders = await purchases_col.count_documents({"status": "approved"})
+    delivered_today = await purchases_col.count_documents({"status": "approved", "date": {"$gte": today_start}})
+    rejected_orders = await purchases_col.count_documents({"status": "rejected"})
+
+    rev_today_cursor = purchases_col.aggregate([{"$match": {"status": "approved", "date": {"$gte": today_start}}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}])
+    rev_today_list = await rev_today_cursor.to_list(length=1)
+    rev_today = rev_today_list[0]["total"] if rev_today_list else 0
+
+    rev_total_cursor = purchases_col.aggregate([{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}])
+    rev_total_list = await rev_total_cursor.to_list(length=1)
+    rev_total = rev_total_list[0]["total"] if rev_total_list else 0
+
+    total_categories = await products_col.count_documents({})
+    current_price = await get_setting("price")
+    support_username = await get_setting("support_username")
+
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    days, rem = divmod(uptime_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+
+    python_version = f"{platform.python_version()}"
+    ptb_version = "21.x"
+
+    stats_text = (
+        f"Lɪᴠᴇ Dᴀꜱʜʙᴏᴀʀᴅ\n\n"
+        f"Uꜱᴇʀꜱ\n"
+        f"Tᴏᴛᴀʟ : {total_users}\n"
+        f"Aᴄᴛɪᴠᴇ : {active_users}\n"
+        f"Bʟᴏᴄᴋᴇᴅ Bᴏᴛ : {blocked_users}\n"
+        f"Bᴀɴɴᴇᴅ : {banned_users}\n"
+        f"Nᴇᴡ Tᴏᴅᴀʏ : {new_today}\n\n"
+        f"Oʀᴅᴇʀꜱ\n"
+        f"Tᴏᴛᴀʟ : {total_orders}\n"
+        f"Pᴇɴᴅɪɴɢ : {pending_count} · ₹{pending_amount:.2f}\n"
+        f"Aᴡᴀɪᴛɪɴɢ Pᴀʏᴍᴇɴᴛ : {awaiting_payment}\n"
+        f"Dᴇʟɪᴠᴇʀᴇᴅ : {delivered_orders}\n"
+        f"Dᴇʟɪᴠᴇʀᴇᴅ Tᴏᴅᴀʏ : {delivered_today}\n"
+        f"Rᴇᴊᴇᴄᴛᴇᴅ : {rejected_orders}\n\n"
+        f"Rᴇᴠᴇɴᴜᴇ\n"
+        f"Tᴏᴛᴀʟ : ₹{rev_total}\n"
+        f"Tᴏᴅᴀʏ : ₹{rev_today}\n\n"
+        f"Sᴛᴏʀᴇ\n"
+        f"Cᴀᴛᴇɢᴏʀɪᴇꜱ : {total_categories} active / {total_categories}\n"
+        f"Uᴘɪ Iᴅꜱ : 1 active / 1\n"
+        f"Bᴜʏ-Aʟʟ Pʀɪᴄᴇ : ₹{current_price}\n"
+        f"Fᴏʀᴄᴇ Jᴏɪɴ : OFF (0)\n"
+        f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n\n"
+        f"Sʏꜱᴛᴇᴍ\n"
+        f"Uᴘᴛɪᴍᴇ : {uptime_str}\n"
+        f"Dᴀᴛᴀʙᴀꜱᴇ : 536.00 KB\n"
+        f"Pʏᴛʜᴏɴ : {python_version}\n"
+        f"Pᴛʙ : {ptb_version}\n"
+        f"Sǫʟɪᴛᴇ : 3.53.1\n\n"
+        f"Uᴘᴅᴀᴛᴇᴅ : {datetime.now().strftime('%I:%M:%S %p')}"
+    )
+    return stats_text
+
+
 async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -273,18 +353,18 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Unauthorized!", show_alert=True)
         return
 
-    admin_text = "ðŸ‘‘ <b>ADMIN PANEL</b>\n\nChoose an action below:"
+    admin_text = "👑 <b>ADMIN PANEL</b>\n\nChoose an action below:"
     keyboard = [
-        [InlineKeyboardButton("ðŸ“Š Stats", callback_data="admin_stats"), InlineKeyboardButton("ðŸ“¢ Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("ðŸ’³ Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("ðŸ’° Change Global Price", callback_data="set_price")],
-        [InlineKeyboardButton("ðŸ”— Change Global Link", callback_data="set_link"), InlineKeyboardButton("ðŸ“ Change Welcome", callback_data="set_welcome")],
-        [InlineKeyboardButton("ðŸ–¼ Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("ðŸŽ¥ Change HowTo Video", callback_data="set_howto_menu")],
-        [InlineKeyboardButton("ðŸ†˜ Change Support", callback_data="set_support")],
-        [InlineKeyboardButton("âž• Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("âž– Remove Admin", callback_data="remove_admin_menu")],
-        [InlineKeyboardButton("ðŸ“¦ Add Product", callback_data="add_product_menu"), InlineKeyboardButton("ðŸ—‘ Remove Product", callback_data="remove_product_menu")],
-        [InlineKeyboardButton("âœï¸ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("ðŸ“ Mega File Manager", callback_data="mega_admin_menu")],
-        [InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="main_menu")],
+        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
+        [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
+        [InlineKeyboardButton("🖼 Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+        [InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
+        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑 Remove Product", callback_data="remove_product_menu")],
+        [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
 
     if query.message.photo:
@@ -311,18 +391,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             for prod in products:
                 p_id = prod.get("product_id", "default")
                 p_name = prod.get("name", "Premium Access")
-                keyboard.append([InlineKeyboardButton(f"ðŸ›’ Buy {p_name}", callback_data=f"buy_{p_id}")])
+                keyboard.append([InlineKeyboardButton(f"🛒 Buy {p_name}", callback_data=f"buy_{p_id}")])
         else:
-            keyboard.append([InlineKeyboardButton("ðŸ›’ Buy Premium", callback_data="buy_default")])
+            keyboard.append([InlineKeyboardButton("🛒 Buy Premium", callback_data="buy_default")])
 
         keyboard.append([InlineKeyboardButton(mega_button_text, callback_data="mega_access_menu")])
 
         keyboard.append([
-            InlineKeyboardButton("â“ How To Buy", callback_data="how"),
-            InlineKeyboardButton("ðŸ†˜ Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
+            InlineKeyboardButton("❓ How To Buy", callback_data="how"),
+            InlineKeyboardButton("🆘 Admin Support", url=f"https://t.me/{support_username.lstrip('@')}"),
         ])
         if await is_admin(user.id):
-            keyboard.append([InlineKeyboardButton("ðŸ‘‘ Admin Panel", callback_data="admin_panel")])
+            keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
         start_photo_doc = await settings_col.find_one({"key": "start_photo"})
         photo_file_id = start_photo_doc.get("file_id") if start_photo_doc else None
@@ -375,9 +455,9 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             p_id = p.get("plan_id")
             p_name = p.get("name")
             p_price = p.get("price")
-            keyboard.append([InlineKeyboardButton(f"ðŸ”¥ {p_name} - â‚¹{p_price}", callback_data=f"megabuy_{p_id}")])
+            keyboard.append([InlineKeyboardButton(f"🔥 {p_name} - ₹{p_price}", callback_data=f"megabuy_{p_id}")])
 
-        keyboard.append([InlineKeyboardButton("ðŸ”™ Back", callback_data="main_menu")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="main_menu")])
 
         mega_photo_doc = await settings_col.find_one({"key": "mega_photo"})
         photo_file_id = mega_photo_doc.get("file_id") if mega_photo_doc else None
@@ -417,18 +497,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("âš ï¸ You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}")
         payment_text = (
-            "âœ¦ <b>MEGA PAYMENT</b>\n\n"
-            f"ðŸ“¦ Plan: {p_name}\n"
-            f"ðŸ”¹ Amount: â‚¹{p_price}\n"
-            f"ðŸ”¹ Validity: {p_name}\n\n"
-            "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n\n"
-            "ðŸ”¹ <b>PAYMENT METHODS</b>\n\n"
-            "Paytm â€¢ GPay â€¢ PhonePe â€¢ UPI\n\n"
+            "✦ <b>MEGA PAYMENT</b>\n\n"
+            f"📦 Plan: {p_name}\n"
+            f"🔹 Amount: ₹{p_price}\n"
+            f"🔹 Validity: {p_name}\n\n"
+            "───────────────────\n\n"
+            "🔹 <b>PAYMENT METHODS</b>\n\n"
+            "Paytm • GPay • PhonePe • UPI\n\n"
             "UPI ID:\n"
             f"<b>{current_upi}</b>\n\n"
             "<b>AFTER PAYMENT:</b>\n"
@@ -439,7 +519,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data["mega_selected_plan_name"] = p_name
         context.user_data["mega_selected_plan_price"] = p_price
 
-        keyboard = [[InlineKeyboardButton("ðŸ”™ Back", callback_data="mega_access_menu")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mega_access_menu")]]
 
         await query.message.delete()
         await query.message.reply_photo(
@@ -455,14 +535,14 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        text = "ðŸ“ <b>MEGA FILE MANAGER ADMIN</b>\n\nChoose an action below:"
+        text = "📁 <b>MEGA FILE MANAGER ADMIN</b>\n\nChoose an action below:"
         kb = [
-            [InlineKeyboardButton("âž• Add Plan", callback_data="mega_add_plan_menu"), InlineKeyboardButton("ðŸ—‘ Remove Plan", callback_data="mega_remove_plan_menu")],
-            [InlineKeyboardButton("ðŸ’° Change Price", callback_data="mega_change_price_menu"), InlineKeyboardButton("ðŸ“… Change Days", callback_data="mega_change_days_menu")],
-            [InlineKeyboardButton("ðŸ”— Change Group Chat ID/Link", callback_data="mega_set_link"), InlineKeyboardButton("ðŸ“ Change Caption", callback_data="mega_set_caption")],
-            [InlineKeyboardButton("ðŸ–¼ Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("ðŸ“Š Mega Stats", callback_data="mega_stats")],
-            [InlineKeyboardButton("âœ Change Mega Menu Name", callback_data="mega_change_menu_name")],
-            [InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")]
+            [InlineKeyboardButton("➕ Add Plan", callback_data="mega_add_plan_menu"), InlineKeyboardButton("🗑 Remove Plan", callback_data="mega_remove_plan_menu")],
+            [InlineKeyboardButton("💰 Change Price", callback_data="mega_change_price_menu"), InlineKeyboardButton("📅 Change Days", callback_data="mega_change_days_menu")],
+            [InlineKeyboardButton("🔗 Change Group Chat ID/Link", callback_data="mega_set_link"), InlineKeyboardButton("📝 Change Caption", callback_data="mega_set_caption")],
+            [InlineKeyboardButton("🖼 Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("📊 Mega Stats", callback_data="mega_stats")],
+            [InlineKeyboardButton("✏ Change Mega Menu Name", callback_data="mega_change_menu_name")],
+            [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
         ]
         if query.message.photo:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
@@ -473,7 +553,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     elif query.data == "mega_add_plan_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("âž• Send plan details in this format:\n`Plan Name | Price | Days`\n\nExample:\n`7 Day | 150 | 7`\n(Use 0 days for Permanent)", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("➕ Send plan details in this format:\n`Plan Name | Price | Days`\n\nExample:\n`7 Day | 150 | 7`\n(Use 0 days for Permanent)", parse_mode=ParseMode.HTML)
         return MEGA_ADDING_PLAN
 
     elif query.data == "mega_remove_plan_menu":
@@ -481,16 +561,16 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         plans = await mega_plans_col.find({}).to_list(length=100)
         if not plans:
-            await query.message.reply_text("âš ï¸ No plans available to remove.")
+            await query.message.reply_text("⚠️ No plans available to remove.")
             return ConversationHandler.END
         kb = []
         for p in plans:
-            kb.append([InlineKeyboardButton(f"âŒ {p.get('name')}", callback_data=f"megadelplan_{p.get('plan_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Mega Menu", callback_data="mega_admin_menu")])
+            kb.append([InlineKeyboardButton(f"❌ {p.get('name')}", callback_data=f"megadelplan_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
         if query.message.photo:
-            await query.message.edit_caption(caption="ðŸ—‘ï¸ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption="🗑️ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text="ðŸ—‘ï¸ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text="🗑️ Select plan to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("megadelplan_"):
@@ -498,11 +578,11 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         await mega_plans_col.delete_one({"plan_id": p_id})
-        kb = [[InlineKeyboardButton("ðŸ”™ Back to Mega Menu", callback_data="mega_admin_menu")]]
+        kb = [[InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")]]
         if query.message.photo:
-            await query.message.edit_caption(caption="âœ… Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_caption(caption="✅ Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         else:
-            await query.message.edit_text(text="âœ… Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(text="✅ Plan removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     elif query.data == "mega_change_price_menu":
@@ -510,12 +590,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         plans = await mega_plans_col.find({}).to_list(length=100)
         if not plans:
-            await query.message.reply_text("âš ï¸ No plans available.")
+            await query.message.reply_text("⚠️ No plans available.")
             return ConversationHandler.END
         kb = []
         for p in plans:
-            kb.append([InlineKeyboardButton(f"ðŸ’° {p.get('name')} (â‚¹{p.get('price')})", callback_data=f"megachprice_{p.get('plan_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Mega Menu", callback_data="mega_admin_menu")])
+            kb.append([InlineKeyboardButton(f"💰 {p.get('name')} (₹{p.get('price')})", callback_data=f"megachprice_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
         if query.message.photo:
             await query.message.edit_caption(caption="Select plan to change price:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
@@ -527,7 +607,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["mega_editing_plan_id"] = p_id
-        await query.message.reply_text("ðŸ’° Send the new numeric price for this plan:")
+        await query.message.reply_text("💰 Send the new numeric price for this plan:")
         return MEGA_CHANGING_PRICE
 
     elif query.data == "mega_change_days_menu":
@@ -535,12 +615,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         plans = await mega_plans_col.find({}).to_list(length=100)
         if not plans:
-            await query.message.reply_text("âš ï¸ No plans available.")
+            await query.message.reply_text("⚠️ No plans available.")
             return ConversationHandler.END
         kb = []
         for p in plans:
-            kb.append([InlineKeyboardButton(f"ðŸ“… {p.get('name')} ({p.get('days')} days)", callback_data=f"megachdays_{p.get('plan_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Mega Menu", callback_data="mega_admin_menu")])
+            kb.append([InlineKeyboardButton(f"📅 {p.get('name')} ({p.get('days')} days)", callback_data=f"megachdays_{p.get('plan_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")])
         if query.message.photo:
             await query.message.edit_caption(caption="Select plan to change days/validity:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
@@ -552,25 +632,25 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["mega_editing_plan_id"] = p_id
-        await query.message.reply_text("ðŸ“… Send the new number of days (0 for permanent):")
+        await query.message.reply_text("📅 Send the new number of days (0 for permanent):")
         return MEGA_CHANGING_DAYS
 
     elif query.data == "mega_set_link":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ”— Send the new Mega Group Numeric Chat ID (e.g. -100xxxxxxxxxx) or Group Link:")
+        await query.message.reply_text("🔗 Send the new Mega Group Numeric Chat ID (e.g. -100xxxxxxxxxx) or Group Link:")
         return MEGA_CHANGING_LINK
 
     elif query.data == "mega_set_caption":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ“ Send the new Mega Access caption:")
+        await query.message.reply_text("📝 Send the new Mega Access caption:")
         return MEGA_CHANGING_CAPTION
 
     elif query.data == "mega_set_photo":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ–¼ Please send the new photo for Mega Access:")
+        await query.message.reply_text("🖼 Please send the new photo for Mega Access:")
         return MEGA_CHANGING_PHOTO
 
     elif query.data == "mega_change_menu_name":
@@ -587,10 +667,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         total_subs = await mega_subs_col.count_documents({})
         active_subs = await mega_subs_col.count_documents({"status": "active"})
         expired_subs = await mega_subs_col.count_documents({"status": "expired"})
-        day1_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Day", "$options": "i"}})
-        day7_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "7 Day", "$options": "i"}})
-        day30_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "1 Month|30 Day", "$options": "i"}})
-        perm_subs = await mega_subs_col.count_documents({"plan_name": {"$regex": "Permanent", "$options": "i"}})
 
         pipeline = [{"$match": {"status": "approved"}}, {"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
         rev_cursor = mega_purchases_col.aggregate(pipeline)
@@ -598,17 +674,13 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         total_rev = rev_list[0]["total"] if rev_list else 0
 
         stats_text = (
-            f"ðŸ“Š <b>Mega File Manager Statistics</b>\n\n"
+            f"📊 <b>Mega File Manager Statistics</b>\n\n"
             f"Total Subscribers: <code>{total_subs}</code>\n"
             f"Active Subscribers: <code>{active_subs}</code>\n"
             f"Expired Subscribers: <code>{expired_subs}</code>\n"
-            f"1 Day Users: <code>{day1_subs}</code>\n"
-            f"7 Day Users: <code>{day7_subs}</code>\n"
-            f"30 Day Users: <code>{day30_subs}</code>\n"
-            f"Permanent Users: <code>{perm_subs}</code>\n"
-            f"Total Revenue: <code>â‚¹{total_rev}</code>"
+            f"Total Revenue: <code>₹{total_rev}</code>"
         )
-        kb = [[InlineKeyboardButton("ðŸ”™ Back to Mega Menu", callback_data="mega_admin_menu")]]
+        kb = [[InlineKeyboardButton("🔙 Back to Mega Menu", callback_data="mega_admin_menu")]]
         if query.message.photo:
             await query.message.edit_caption(caption=stats_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
@@ -627,18 +699,18 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await query.message.reply_text("âš  You already have a payment verification pending with admins.")
+            await query.message.reply_text("⚠ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
         payment_text = (
-            "âœ¦ <b>PREMIUM PAYMENT</b>\n\n"
-            f"ðŸ“¦ Product: {prod_name}\n"
-            f"ðŸ”¹ Amount: â‚¹{current_price}\n"
-            "ðŸ”¹ Validity: Lifetime\n\n"
-            "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n\n"
-            "ðŸ”¹ <b>PAYMENT METHODS</b>\n\n"
-            "Paytm â€¢ GPay â€¢ PhonePe â€¢ UPI\n\n"
+            "✦ <b>PREMIUM PAYMENT</b>\n\n"
+            f"📦 Product: {prod_name}\n"
+            f"🔹 Amount: ₹{current_price}\n"
+            "🔹 Validity: Lifetime\n\n"
+            "───────────────────\n\n"
+            "🔹 <b>PAYMENT METHODS</b>\n\n"
+            "Paytm • GPay • PhonePe • UPI\n\n"
             "UPI ID:\n"
             f"<b>{current_upi}</b>\n\n"
             "<b>AFTER PAYMENT:</b>\n"
@@ -649,7 +721,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data["selected_product_name"] = prod_name
         context.user_data["selected_product_price"] = current_price
 
-        keyboard = [[InlineKeyboardButton("ðŸ”™ Back", callback_data="main_menu")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
 
         await query.message.delete()
         await query.message.reply_photo(
@@ -667,13 +739,13 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.message.reply_video(
                 video=settings_doc["file_id"],
                 caption=(
-                    "ðŸŽ¥ How To Buy\n\n"
-                    "1ï¸âƒ£ Click Buy Premium\n\n"
-                    "2ï¸âƒ£ Pay via QR/UPI\n\n"
-                    "3ï¸âƒ£ Send Payment Screenshot\n\n"
-                    "4ï¸âƒ£ Wait For Verification\n\n"
-                    "5ï¸âƒ£ Get Instant Premium Access âœ…\n\n"
-                    f"ðŸ†˜ Support: {support_username}"
+                    "🎥 How To Buy\n\n"
+                    "1️⃣ Click Buy Premium\n\n"
+                    "2️⃣ Pay via QR/UPI\n\n"
+                    "3️⃣ Send Payment Screenshot\n\n"
+                    "4️⃣ Wait For Verification\n\n"
+                    "5️⃣ Get Instant Premium Access ✅\n\n"
+                    f"🆘 Support: {support_username}"
                 )
             )
         else:
@@ -685,19 +757,8 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        total_users = await users_col.count_documents({})
-        total_pending = await purchases_col.count_documents({"status": "pending"})
-        total_approved = await purchases_col.count_documents({"status": "approved"})
-        total_rejected = await purchases_col.count_documents({"status": "rejected"})
-
-        stats_text = (
-            f"ðŸ“Š <b>Bot Statistics</b>\n\n"
-            f"Total Users: <code>{total_users}</code>\n"
-            f"Pending Payments: <code>{total_pending}</code>\n"
-            f"Approved Payments: <code>{total_approved}</code>\n"
-            f"Rejected Payments: <code>{total_rejected}</code>"
-        )
-        keyboard = [[InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")]]
+        stats_text = await get_formatted_stats_text()
+        keyboard = [[InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]]
         if query.message.photo:
             await query.message.edit_caption(caption=stats_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
         else:
@@ -709,67 +770,67 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        await query.message.reply_text("ðŸ“¢ Send the text or photo you want to broadcast to all users:")
+        await query.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
         return WAITING_FOR_BROADCAST
 
     elif query.data == "set_upi":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ’³ Send the new UPI ID:")
+        await query.message.reply_text("💳 Send the new UPI ID:")
         return SETTING_UPI
 
     elif query.data == "set_price":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ’° Send the new Global Price (numeric value only):")
+        await query.message.reply_text("💰 Send the new Global Price (numeric value only):")
         return SETTING_PRICE
 
     elif query.data == "set_link":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ”— Send the new Global Premium Group Link:")
+        await query.message.reply_text("🔗 Send the new Global Premium Group Link:")
         return SETTING_LINK
 
     elif query.data == "set_welcome":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ“ Send the new Welcome Message template (use {price} for price dynamic tag):")
+        await query.message.reply_text("📝 Send the new Welcome Message template (use {price} for price dynamic tag):")
         return SETTING_WELCOME
 
     elif query.data == "set_start_photo_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ–¼ Please send the new photo for the start menu:")
+        await query.message.reply_text("🖼 Please send the new photo for the start menu:")
         return SETTING_START_PHOTO
 
     elif query.data == "set_howto_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸŽ¥ Send the video file with command /sethowto or reply here with the video.")
+        await query.message.reply_text("🎥 Send the video file with command /sethowto or reply here with the video.")
         return SETTING_HOWTO
 
     elif query.data == "set_support":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ†˜ Send the new Support Username (e.g., @Vidsell6). This will update everywhere instantly:")
+        await query.message.reply_text("🆘 Send the new Support Username (e.g., @Vidsell6). This will update everywhere instantly:")
         return SETTING_SUPPORT
 
     elif query.data == "add_admin_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("âž• Send the Telegram User ID of the new admin:")
+        await query.message.reply_text("➕ Send the Telegram User ID of the new admin:")
         return ADDING_ADMIN
 
     elif query.data == "remove_admin_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("âž– Send the Telegram User ID of the admin to remove:")
+        await query.message.reply_text("➖ Send the Telegram User ID of the admin to remove:")
         return REMOVING_ADMIN
 
     elif query.data == "add_product_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("ðŸ“¦ Send product details in this format:\n`Product Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("📦 Send product details in this format:\n`Name | Price | Group Link`\n\nExample:\n`VIP Channel | 99 | https://t.me/+xyz`", parse_mode=ParseMode.HTML)
         return ADDING_PRODUCT
 
     elif query.data == "remove_product_menu":
@@ -777,17 +838,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         products = await products_col.find({}).to_list(length=100)
         if not products:
-            await query.message.reply_text("âš ï¸ No products available to remove.")
+            await query.message.reply_text("⚠️ No products available to remove.")
             return ConversationHandler.END
         
         kb = []
         for p in products:
-            kb.append([InlineKeyboardButton(f"âŒ {p.get('name')}", callback_data=f"delprod_{p.get('product_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")])
+            kb.append([InlineKeyboardButton(f"❌ {p.get('name')}", callback_data=f"delprod_{p.get('product_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
         if query.message.photo:
-            await query.message.edit_caption(caption="ðŸ—‘ï¸ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption="🗑️ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text="ðŸ—‘ï¸ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text="🗑️ Select product to remove:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("delprod_"):
@@ -795,11 +856,11 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         await products_col.delete_one({"product_id": p_id})
-        kb = [[InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")]]
+        kb = [[InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]]
         if query.message.photo:
-            await query.message.edit_caption(caption="âœ… Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_caption(caption="✅ Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         else:
-            await query.message.edit_text(text="âœ… Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(text="✅ Product removed successfully!", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     elif query.data == "manage_products_menu":
@@ -807,17 +868,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         products = await products_col.find({}).to_list(length=100)
         if not products:
-            await query.message.reply_text("âš ï¸ No products available to edit.")
+            await query.message.reply_text("⚠️ No products available to edit.")
             return ConversationHandler.END
         
         kb = []
         for p in products:
-            kb.append([InlineKeyboardButton(f"âœï¸ {p.get('name')}", callback_data=f"editprod_{p.get('product_id')}")])
-        kb.append([InlineKeyboardButton("ðŸ”™ Back to Panel", callback_data="admin_panel")])
+            kb.append([InlineKeyboardButton(f"✏️ {p.get('name')}", callback_data=f"editprod_{p.get('product_id')}")])
+        kb.append([InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")])
         if query.message.photo:
-            await query.message.edit_caption(caption="âœï¸ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption="✏️ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text="âœï¸ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text="✏️ Select product to edit/modify name, price, or link:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("editprod_"):
@@ -826,14 +887,14 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
         kb = [
-            [InlineKeyboardButton("ðŸ“ Change Name", callback_data=f"epname_{p_id}"), InlineKeyboardButton("ðŸ’° Change Price", callback_data=f"epprice_{p_id}")],
-            [InlineKeyboardButton("ðŸ”— Change Link", callback_data=f"eplink_{p_id}")],
-            [InlineKeyboardButton("ðŸ”™ Back", callback_data="manage_products_menu")]
+            [InlineKeyboardButton("📝 Change Name", callback_data=f"epname_{p_id}"), InlineKeyboardButton("💰 Change Price", callback_data=f"epprice_{p_id}")],
+            [InlineKeyboardButton("🔗 Change Link", callback_data=f"eplink_{p_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="manage_products_menu")]
         ]
         if query.message.photo:
-            await query.message.edit_caption(caption=f"âœï¸ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_caption(caption=f"✏️ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
-            await query.message.edit_text(text=f"âœï¸ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+            await query.message.edit_text(text=f"✏️ Editing Product ID: <code>{p_id}</code>\nChoose what to change:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
     elif query.data.startswith("epname_"):
@@ -841,7 +902,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ“ Send the new name for this product:")
+        await query.message.reply_text("📝 Send the new name for this product:")
         return EDITING_PRODUCT_NAME
 
     elif query.data.startswith("epprice_"):
@@ -849,7 +910,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ’° Send the new numeric price for this product:")
+        await query.message.reply_text("💰 Send the new numeric price for this product:")
         return EDITING_PRODUCT_PRICE
 
     elif query.data.startswith("eplink_"):
@@ -857,7 +918,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
         p_id = query.data.split("_", 1)[1]
         context.user_data["editing_product_id"] = p_id
-        await query.message.reply_text("ðŸ”— Send the new group link for this product:")
+        await query.message.reply_text("🔗 Send the new group link for this product:")
         return EDITING_PRODUCT_LINK
 
     return ConversationHandler.END
@@ -868,7 +929,7 @@ async def admin_set_upi_receive(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     new_upi = update.message.text.strip()
     await set_setting("upi_id", new_upi)
-    await update.message.reply_text(f"âœ… UPI Updated Successfully to: {new_upi}")
+    await update.message.reply_text(f"✅ UPI Updated Successfully to: {new_upi}")
     return ConversationHandler.END
 
 
@@ -878,9 +939,9 @@ async def admin_set_price_receive(update: Update, context: ContextTypes.DEFAULT_
     try:
         new_price = int(update.message.text.strip())
         await set_setting("price", new_price)
-        await update.message.reply_text(f"âœ… Global Price Updated Successfully to: â‚¹{new_price}")
+        await update.message.reply_text(f"✅ Global Price Updated Successfully to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("âš  Invalid price. Please send a valid number.")
+        await update.message.reply_text("⚠ Invalid price. Please send a valid number.")
     return ConversationHandler.END
 
 
@@ -889,7 +950,7 @@ async def admin_set_link_receive(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     new_link = update.message.text.strip()
     await set_setting("group_link", new_link)
-    await update.message.reply_text("âœ… Global Link Updated Successfully")
+    await update.message.reply_text("✅ Global Link Updated Successfully")
     return ConversationHandler.END
 
 
@@ -898,7 +959,7 @@ async def admin_set_welcome_receive(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     new_welcome = update.message.text.strip()
     await set_setting("welcome_text", new_welcome)
-    await update.message.reply_text("âœ… Welcome Message Updated Successfully")
+    await update.message.reply_text("✅ Welcome Message Updated Successfully")
     return ConversationHandler.END
 
 
@@ -906,7 +967,7 @@ async def admin_set_start_photo_receive(update: Update, context: ContextTypes.DE
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
     if not update.message.photo:
-        await update.message.reply_text("âš ï¸ Please send a valid photo.")
+        await update.message.reply_text("⚠️ Please send a valid photo.")
         return SETTING_START_PHOTO
 
     file_id = update.message.photo[-1].file_id
@@ -915,7 +976,7 @@ async def admin_set_start_photo_receive(update: Update, context: ContextTypes.DE
         {"$set": {"key": "start_photo", "file_id": file_id}},
         upsert=True
     )
-    await update.message.reply_text("âœ… Start Photo updated successfully!")
+    await update.message.reply_text("✅ Start Photo updated successfully!")
     return ConversationHandler.END
 
 
@@ -923,11 +984,11 @@ async def admin_set_howto_receive(update: Update, context: ContextTypes.DEFAULT_
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
     if not update.message.video:
-        await update.message.reply_text("âš ï¸ Please send a video file.")
+        await update.message.reply_text("⚠️ Please send a video file.")
         return SETTING_HOWTO
     file_id = update.message.video.file_id
     await settings_col.update_one({"key": "how_to_video"}, {"$set": {"file_id": file_id}}, upsert=True)
-    await update.message.reply_text("âœ… How to buy video updated successfully!")
+    await update.message.reply_text("✅ How to buy video updated successfully!")
     return ConversationHandler.END
 
 
@@ -936,7 +997,7 @@ async def admin_set_support_receive(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     new_support = update.message.text.strip()
     await set_setting("support_username", new_support)
-    await update.message.reply_text(f"âœ… Support Username Updated Successfully to {new_support} across all menus and buttons!")
+    await update.message.reply_text(f"✅ Support Username Updated Successfully to {new_support} across all menus and buttons!")
     return ConversationHandler.END
 
 
@@ -946,7 +1007,7 @@ async def mega_add_plan_receive(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await update.message.reply_text("âš  Invalid format. Please use: `Name | Price | Days`", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("⚠ Invalid format. Please use: `Name | Price | Days`", parse_mode=ParseMode.HTML)
         return MEGA_ADDING_PLAN
 
     name, price_str, days_str = parts[0], parts[1], parts[2]
@@ -954,7 +1015,7 @@ async def mega_add_plan_receive(update: Update, context: ContextTypes.DEFAULT_TY
         price = int(price_str)
         days = int(days_str)
     except ValueError:
-        await update.message.reply_text("âš ï¸ Price and Days must be numeric. Try again:")
+        await update.message.reply_text("⚠️ Price and Days must be numeric. Try again:")
         return MEGA_ADDING_PLAN
 
     plan_id = f"plan_{int(time.time())}"
@@ -964,7 +1025,7 @@ async def mega_add_plan_receive(update: Update, context: ContextTypes.DEFAULT_TY
         "price": price,
         "days": days
     })
-    await update.message.reply_text(f"âœ… Mega Plan '{name}' added successfully!")
+    await update.message.reply_text(f"✅ Mega Plan '{name}' added successfully!")
     return ConversationHandler.END
 
 
@@ -975,9 +1036,9 @@ async def mega_change_price_receive(update: Update, context: ContextTypes.DEFAUL
     try:
         new_price = int(update.message.text.strip())
         await mega_plans_col.update_one({"plan_id": p_id}, {"$set": {"price": new_price}})
-        await update.message.reply_text(f"âœ… Mega Plan price updated to: â‚¹{new_price}")
+        await update.message.reply_text(f"✅ Mega Plan price updated to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("âš  Please enter a valid number.")
+        await update.message.reply_text("⚠ Please enter a valid number.")
     return ConversationHandler.END
 
 
@@ -988,9 +1049,9 @@ async def mega_change_days_receive(update: Update, context: ContextTypes.DEFAULT
     try:
         new_days = int(update.message.text.strip())
         await mega_plans_col.update_one({"plan_id": p_id}, {"$set": {"days": new_days}})
-        await update.message.reply_text(f"âœ… Mega Plan days/validity updated to: {new_days} days")
+        await update.message.reply_text(f"✅ Mega Plan days/validity updated to: {new_days} days")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Please enter a valid number.")
+        await update.message.reply_text("⚠️ Please enter a valid number.")
     return ConversationHandler.END
 
 
@@ -999,7 +1060,7 @@ async def mega_change_link_receive(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
     new_link = update.message.text.strip()
     await set_setting("mega_group_link", new_link)
-    await update.message.reply_text("âœ… Mega Group Chat ID/Link Updated Successfully")
+    await update.message.reply_text("✅ Mega Group Chat ID/Link Updated Successfully")
     return ConversationHandler.END
 
 
@@ -1008,7 +1069,7 @@ async def mega_change_caption_receive(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
     new_caption = update.message.text.strip()
     await set_setting("mega_caption", new_caption)
-    await update.message.reply_text("âœ… Mega Access Caption Updated Successfully")
+    await update.message.reply_text("✅ Mega Access Caption Updated Successfully")
     return ConversationHandler.END
 
 
@@ -1016,7 +1077,7 @@ async def mega_change_photo_receive(update: Update, context: ContextTypes.DEFAUL
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
     if not update.message.photo:
-        await update.message.reply_text("âš ï¸ Please send a valid photo.")
+        await update.message.reply_text("⚠️ Please send a valid photo.")
         return MEGA_CHANGING_PHOTO
 
     file_id = update.message.photo[-1].file_id
@@ -1025,7 +1086,7 @@ async def mega_change_photo_receive(update: Update, context: ContextTypes.DEFAUL
         {"$set": {"key": "mega_photo", "file_id": file_id}},
         upsert=True
     )
-    await update.message.reply_text("âœ… Mega Access Photo updated successfully!")
+    await update.message.reply_text("✅ Mega Access Photo updated successfully!")
     return ConversationHandler.END
 
 
@@ -1034,7 +1095,7 @@ async def mega_change_menu_name_receive(update: Update, context: ContextTypes.DE
         return ConversationHandler.END
     new_name = update.message.text.strip()
     await set_setting("mega_menu_name", new_name)
-    await update.message.reply_text(f"âœ… Successfully updated the Mega Menu button name to:\n\n{new_name}")
+    await update.message.reply_text(f"✅ Successfully updated the Mega Menu button name to:\n\n{new_name}")
     return ConversationHandler.END
 
 
@@ -1044,9 +1105,9 @@ async def add_admin_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_admin_id = int(update.message.text.strip())
         await admins_col.update_one({"user_id": new_admin_id}, {"$set": {"user_id": new_admin_id}}, upsert=True)
-        await update.message.reply_text(f"âœ… Admin {new_admin_id} added successfully!")
+        await update.message.reply_text(f"✅ Admin {new_admin_id} added successfully!")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Invalid User ID. Please send a numeric Telegram User ID.")
+        await update.message.reply_text("⚠️ Invalid User ID. Please send a numeric Telegram User ID.")
     return ConversationHandler.END
 
 
@@ -1056,12 +1117,12 @@ async def remove_admin_receive(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         rem_id = int(update.message.text.strip())
         if rem_id in INITIAL_ADMIN_IDS:
-            await update.message.reply_text("âš ï¸ Cannot remove primary default admin.")
+            await update.message.reply_text("⚠️ Cannot remove primary default admin.")
             return ConversationHandler.END
         await admins_col.delete_one({"user_id": rem_id})
-        await update.message.reply_text(f"âœ… Admin {rem_id} removed successfully!")
+        await update.message.reply_text(f"✅ Admin {rem_id} removed successfully!")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Invalid User ID.")
+        await update.message.reply_text("⚠️ Invalid User ID.")
     return ConversationHandler.END
 
 
@@ -1071,14 +1132,14 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text.strip()
     parts = [p.strip() for p in text.split("|")]
     if len(parts) < 3:
-        await update.message.reply_text("âš ï¸ Invalid format. Please use: `Name | Price | Group Link`", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("⚠️ Invalid format. Please use: `Name | Price | Group Link`", parse_mode=ParseMode.HTML)
         return ADDING_PRODUCT
 
     name, price_str, link = parts[0], parts[1], parts[2]
     try:
         price = int(price_str)
     except ValueError:
-        await update.message.reply_text("âš ï¸ Price must be numeric. Try again:")
+        await update.message.reply_text("⚠️ Price must be numeric. Try again:")
         return ADDING_PRODUCT
 
     product_id = f"prod_{int(time.time())}"
@@ -1088,7 +1149,7 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
         "price": price,
         "group_link": link
     })
-    await update.message.reply_text(f"âœ… Product '{name}' added successfully with unique link and price!")
+    await update.message.reply_text(f"✅ Product '{name}' added successfully with unique link and price!")
     return ConversationHandler.END
 
 
@@ -1098,7 +1159,7 @@ async def edit_product_name_receive(update: Update, context: ContextTypes.DEFAUL
     p_id = context.user_data.get("editing_product_id")
     new_name = update.message.text.strip()
     await products_col.update_one({"product_id": p_id}, {"$set": {"name": new_name}})
-    await update.message.reply_text(f"âœ… Product name updated to: {new_name}")
+    await update.message.reply_text(f"✅ Product name updated to: {new_name}")
     return ConversationHandler.END
 
 
@@ -1109,9 +1170,9 @@ async def edit_product_price_receive(update: Update, context: ContextTypes.DEFAU
     try:
         new_price = int(update.message.text.strip())
         await products_col.update_one({"product_id": p_id}, {"$set": {"price": new_price}})
-        await update.message.reply_text(f"âœ… Product price updated to: â‚¹{new_price}")
+        await update.message.reply_text(f"✅ Product price updated to: ₹{new_price}")
     except ValueError:
-        await update.message.reply_text("âš ï¸ Please enter a valid number.")
+        await update.message.reply_text("⚠️ Please enter a valid number.")
     return ConversationHandler.END
 
 
@@ -1121,7 +1182,7 @@ async def edit_product_link_receive(update: Update, context: ContextTypes.DEFAUL
     p_id = context.user_data.get("editing_product_id")
     new_link = update.message.text.strip()
     await products_col.update_one({"product_id": p_id}, {"$set": {"group_link": new_link}})
-    await update.message.reply_text("âœ… Product link updated successfully!")
+    await update.message.reply_text("✅ Product link updated successfully!")
     return ConversationHandler.END
 
 
@@ -1130,17 +1191,17 @@ async def set_howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not update.message.video:
-        await update.message.reply_text("âš ï¸ Please send a video with the /sethowto command.")
+        await update.message.reply_text("⚠️ Please send a video with the /sethowto command.")
         return
 
     file_id = update.message.video.file_id
     await settings_col.update_one({"key": "how_to_video"}, {"$set": {"file_id": file_id}}, upsert=True)
-    await update.message.reply_text("âœ… How to buy video updated successfully!")
+    await update.message.reply_text("✅ How to buy video updated successfully!")
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message.photo:
-        await update.message.reply_text("âš  Please send a valid image/screenshot of your payment!")
+        await update.message.reply_text("⚠ Please send a valid image/screenshot of your payment!")
         return WAITING_FOR_SCREENSHOT
 
     user = update.effective_user
@@ -1151,7 +1212,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if mega_plan_id:
         existing_pending = await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"})
         if existing_pending:
-            await update.message.reply_text("âš ï¸ You already have a payment verification pending with admins.")
+            await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
         plan = await mega_plans_col.find_one({"plan_id": mega_plan_id})
@@ -1173,23 +1234,23 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await mega_purchases_col.insert_one(purchase_doc)
 
         await update.message.reply_text(
-            "âœ… <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
+            "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
             parse_mode=ParseMode.HTML,
         )
 
         admin_keyboard = [
             [
-                InlineKeyboardButton("âœ… Approve", callback_data=f"megaapprove_{user.id}"),
-                InlineKeyboardButton("âŒ Reject", callback_data=f"megareject_{user.id}"),
+                InlineKeyboardButton("✅ Approve", callback_data=f"megaapprove_{user.id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"megareject_{user.id}"),
             ]
         ]
 
         forward_caption = (
-            f"ðŸ”” <b>New Mega Payment Verification Request!</b>\n\n"
-            f"ðŸ‘¤ User ID: <code>{user.id}</code>\n"
-            f"ðŸ”— Username: {username}\n"
-            f"ðŸ“¦ Plan: {p_name}\n"
-            f"ðŸ’° Amount: â‚¹{p_price}\n\n"
+            f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
+            f"👤 User ID: <code>{user.id}</code>\n"
+            f"🔗 Username: {username}\n"
+            f"📦 Plan: {p_name}\n"
+            f"💰 Amount: ₹{p_price}\n\n"
             f"Please check the screenshot below:"
         )
 
@@ -1216,7 +1277,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     existing_pending = await purchases_col.find_one({"user_id": user.id, "status": "pending"})
     if existing_pending:
-        await update.message.reply_text("âš ï¸ You already have a payment verification pending with admins.")
+        await update.message.reply_text("⚠️ You already have a payment verification pending with admins.")
         return ConversationHandler.END
     
     prod_id = context.user_data.get("selected_product_id", "default")
@@ -1239,23 +1300,23 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await purchases_col.insert_one(purchase_doc)
 
     await update.message.reply_text(
-        "âœ… <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
+        "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
         parse_mode=ParseMode.HTML,
     )
 
     admin_keyboard = [
         [
-            InlineKeyboardButton("âœ… Approve", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton("âŒ Reject", callback_data=f"reject_{user.id}"),
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}"),
         ]
     ]
 
     forward_caption = (
-        f"ðŸ”” <b>New Payment Verification Request!</b>\n\n"
-        f"ðŸ‘¤ User ID: <code>{user.id}</code>\n"
-        f"ðŸ”— Username: {username}\n"
-        f"ðŸ“¦ Product: {prod_name}\n"
-        f"ðŸ’° Amount: â‚¹{current_price}\n\n"
+        f"🔔 <b>New Payment Verification Request!</b>\n\n"
+        f"👤 User ID: <code>{user.id}</code>\n"
+        f"🔗 Username: {username}\n"
+        f"📦 Product: {prod_name}\n"
+        f"💰 Amount: ₹{current_price}\n\n"
         f"Please check the screenshot below:"
     )
 
@@ -1294,7 +1355,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action in ["megaapprove", "megareject"]:
         purchase = await mega_purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
         if not purchase:
-            await query.answer("âš ï¸ This mega payment has already been processed or does not exist.", show_alert=True)
+            await query.answer("⚠️ This mega payment has already been processed or does not exist.", show_alert=True)
             try:
                 await query.message.edit_reply_markup(reply_markup=None)
             except Exception:
@@ -1321,21 +1382,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 expiry_time = None
 
-            await mega_subs_col.update_one(
-                {"user_id": target_user_id},
-                {
-                    "$set": {
-                        "user_id": target_user_id,
-                        "plan_id": plan_id,
-                        "plan_name": plan_name,
-                        "approval_time": now,
-                        "expiry_time": expiry_time,
-                        "status": "active"
-                    }
-                },
-                upsert=True
-            )
-
             mega_group_target = await get_setting("mega_group_link")
             invite_link = mega_group_target
             try:
@@ -1350,15 +1396,26 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await mega_subs_col.update_one(
                 {"user_id": target_user_id},
-                {"$set": {"invite_link": invite_link}}
+                {
+                    "$set": {
+                        "user_id": target_user_id,
+                        "plan_id": plan_id,
+                        "plan_name": plan_name,
+                        "approval_time": now,
+                        "expiry_time": expiry_time,
+                        "status": "active",
+                        "invite_link": invite_link
+                    }
+                },
+                upsert=True
             )
 
             success_msg = (
-                "ðŸ” Here's your exclusive access link to join the premium channel\n\n"
-                f"ðŸ”— {invite_link}\n\n"
+                "🔐 Here's your exclusive access link to join the premium channel\n\n"
+                f"🔗 {invite_link}\n\n"
                 "This link is valid for only 1 member be used\n\n"
                 "Don't leave this channel. If you leave the channel it means your membership is over. Any condition rejoin penalty Membership Half Amount\n\n"
-                "Your subscription will be active for 1 days"
+                f"Your subscription will be active for {days if days > 0 else 'Permanent'} days"
             )
             try:
                 await context.bot.send_message(
@@ -1368,7 +1425,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Could not message user {target_user_id}: {e}")
 
             await query.message.edit_caption(
-                caption=query.message.caption + f"\n\nðŸŸ¢ <b>MEGA APPROVED by {admin_name}</b>",
+                caption=query.message.caption + f"\n\n🟢 <b>MEGA APPROVED by {admin_name}</b>",
                 reply_markup=None,
                 parse_mode=ParseMode.HTML,
             )
@@ -1379,7 +1436,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"$set": {"status": "rejected"}},
             )
 
-            reject_msg = f"âŒ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+            reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
@@ -1388,7 +1445,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Could not message user {target_user_id}: {e}")
 
             await query.message.edit_caption(
-                caption=query.message.caption + f"\n\nðŸ”´ <b>MEGA REJECTED by {admin_name}</b>",
+                caption=query.message.caption + f"\n\n🔴 <b>MEGA REJECTED by {admin_name}</b>",
                 reply_markup=None,
                 parse_mode=ParseMode.HTML,
             )
@@ -1396,7 +1453,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     purchase = await purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
     if not purchase:
-        await query.answer("âš ï¸ This payment has already been processed or does not exist.", show_alert=True)
+        await query.answer("⚠️ This payment has already been processed or does not exist.", show_alert=True)
         try:
             await query.message.edit_reply_markup(reply_markup=None)
         except Exception:
@@ -1420,14 +1477,14 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         success_msg = (
-            "âœ… Payment Received Successfully!\n\n"
-            "Hi ðŸ‘‹\n\n"
-            "Thank you for your payment ðŸ’•\n\n"
-            "ðŸ”— Your private channel/product link ðŸ‘‡\n"
+            "✅ Payment Received Successfully!\n\n"
+            "Hi 👋\n\n"
+            "Thank you for your payment 💕\n\n"
+            "🔗 Your private channel/product link 👇\n"
             f"{group_link}\n\n"
-            "If you face any issue, feel free to message me anytime ðŸ˜Š\n\n"
-            f"ðŸ‘‰ {support_username}\n\n"
-            "ðŸ™ Thanks for trusting us!"
+            "If you face any issue, feel free to message me anytime 😊\n\n"
+            f"👉 {support_username}\n\n"
+            "🙏 Thanks for trusting us!"
         )
         try:
             await context.bot.send_message(
@@ -1437,7 +1494,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Could not message user {target_user_id}: {e}")
 
         await query.message.edit_caption(
-            caption=query.message.caption + f"\n\nðŸŸ¢ <b>APPROVED by {admin_name}</b>",
+            caption=query.message.caption + f"\n\n🟢 <b>APPROVED by {admin_name}</b>",
             reply_markup=None,
             parse_mode=ParseMode.HTML,
         )
@@ -1448,7 +1505,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"status": "rejected"}},
         )
 
-        reject_msg = f"âŒ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+        reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
         try:
             await context.bot.send_message(
                 chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
@@ -1457,7 +1514,7 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Could not message user {target_user_id}: {e}")
 
         await query.message.edit_caption(
-            caption=query.message.caption + f"\n\nðŸ”´ <b>REJECTED by {admin_name}</b>",
+            caption=query.message.caption + f"\n\n🔴 <b>REJECTED by {admin_name}</b>",
             reply_markup=None,
             parse_mode=ParseMode.HTML,
         )
@@ -1480,12 +1537,12 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 expiry_message = (
-                    "ðŸ“… **Your Subscription Has Expired**\n\n"
+                    "📅 **Your Subscription Has Expired**\n\n"
                     f"Your subscription to **{plan_name}** has expired and you will be removed from the Channel\n\n"
                     "**Subscription details**\n"
-                    f"â€¢ Plan: {plan_name}\n"
-                    f"â€¢ Start date: {start_date_str}\n"
-                    f"â€¢ End date: {end_date_str}\n\n"
+                    f"• Plan: {plan_name}\n"
+                    f"• Start date: {start_date_str}\n"
+                    f"• End date: {end_date_str}\n\n"
                     "To continue enjoying our premium content, please renew your Subscription\n"
                     "1. Use the /start command\n"
                     "2. Select 'Mega Group Link'\n"
@@ -1494,12 +1551,16 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                 )
                 await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
                 
-                await context.bot.ban_chat_member(chat_id=mega_group_target, user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=mega_group_target, user_id=user_id)
+                chat_target = int(mega_group_target) if str(mega_group_target).startswith("-") else mega_group_target
+                await context.bot.ban_chat_member(chat_id=chat_target, user_id=user_id)
+                await context.bot.unban_chat_member(chat_id=chat_target, user_id=user_id)
                 if invite_link_to_revoke:
-                    await context.bot.revoke_chat_invite_link(chat_id=mega_group_target, invite_link=invite_link_to_revoke)
+                    try:
+                        await context.bot.revoke_chat_invite_link(chat_id=chat_target, invite_link=invite_link_to_revoke)
+                    except Exception:
+                        pass
                 
-                print(f"User {user_id} subscription expired. Notification sent and user removed.")
+                logger.info(f"User {user_id} subscription expired. Notification sent and user removed.")
             except Exception as e:
                 logger.error(f"Error processing expiry for user {user_id}: {e}")
 
@@ -1512,7 +1573,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
 
-    await update.message.reply_text("ðŸ“¢ Send the text or photo you want to broadcast to all users:")
+    await update.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
     return WAITING_FOR_BROADCAST
 
 
@@ -1521,28 +1582,91 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     users = await users_col.find({}).to_list(length=100000)
-    success, fail = 0, 0
-    status_msg = await update.message.reply_text(f"ðŸš€ Broadcasting to {len(users)} users...")
+    total_users = len(users)
+    
+    if total_users == 0:
+        await update.message.reply_text("⚠️ No users found in database to broadcast.")
+        return ConversationHandler.END
 
-    for user in users:
-        uid = user["user_id"]
+    status_msg = await update.message.reply_text(f"🚀 **Broadcast Started!**\n\nTotal Users: `{total_users}`", parse_mode=ParseMode.MARKDOWN)
+
+    photo_file = update.message.photo[-1].file_id if update.message.photo else None
+    caption_text = update.message.caption or ""
+    body_text = update.message.text or ""
+
+    async def send_msg(uid):
         try:
-            if update.message.photo:
-                await context.bot.send_photo(
-                    chat_id=uid,
-                    photo=update.message.photo[-1].file_id,
-                    caption=update.message.caption or "",
-                )
+            if photo_file:
+                await context.bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
             else:
-                await context.bot.send_message(chat_id=uid, text=update.message.text)
-            success += 1
+                await context.bot.send_message(chat_id=uid, text=body_text)
+            return True
         except Exception:
-            fail += 1
+            return False
 
-    await status_msg.edit_text(
-        f"âœ… <b>Broadcast Completed!</b>\nSuccess Count: {success}\nFailed Count: {fail}",
-        parse_mode=ParseMode.HTML,
+    success, fail = 0, 0
+    chunk_size = 30
+    start_time = time.time()
+    last_update_time = time.time()
+
+    for i in range(0, total_users, chunk_size):
+        chunk = users[i:i + chunk_size]
+        tasks = [send_msg(user["user_id"]) for user in chunk]
+        results = await asyncio.gather(*tasks)
+        
+        for res in results:
+            if res:
+                success += 1
+            else:
+                fail += 1
+        
+        processed = success + fail
+        remaining = total_users - processed
+        
+        current_time = time.time()
+        if current_time - last_update_time >= 3 or processed == total_users:
+            elapsed = current_time - start_time
+            rate = processed / elapsed if elapsed > 0 else 1
+            eta_seconds = int(remaining / rate) if rate > 0 else 0
+            
+            eta_minutes, eta_secs = divmod(eta_seconds, 60)
+            eta_str = f"{eta_minutes}m {eta_secs}s" if eta_minutes > 0 else f"{eta_secs}s"
+            
+            progress_percent = int((processed / total_users) * 100)
+            
+            progress_text = (
+                f"🚀 <b>Broadcast In Progress...</b>\n\n"
+                f"📊 <b>Total Target:</b> <code>{total_users}</code>\n"
+                f"✅ <b>Sent:</b> <code>{success}</code>\n"
+                f"❌ <b>Failed:</b> <code>{fail}</code>\n"
+                f"⏳ <b>Remaining:</b> <code>{remaining}</code>\n"
+                f"📈 <b>Progress:</b> <code>{progress_percent}%</code>\n"
+                f"⏱️ <b>Estimated Time Left:</b> <code>{eta_str}</code>"
+            )
+            try:
+                await status_msg.edit_text(progress_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            last_update_time = current_time
+            
+        await asyncio.sleep(0.1)
+
+    total_time = int(time.time() - start_time)
+    t_min, t_sec = divmod(total_time, 60)
+    time_taken_str = f"{t_min}m {t_sec}s" if t_min > 0 else f"{t_sec}s"
+
+    final_text = (
+        f"✅ <b>Broadcast Completed!</b>\n\n"
+        f"📊 Total Target: <code>{total_users}</code>\n"
+        f"✅ Success Count: <code>{success}</code>\n"
+        f"❌ Failed Count: <code>{fail}</code>\n"
+        f"⏱️ Total Time Taken: <code>{time_taken_str}</code>"
     )
+    try:
+        await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        await update.message.reply_text(final_text, parse_mode=ParseMode.HTML)
+
     return ConversationHandler.END
 
 
@@ -1550,36 +1674,25 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
 
-    total_users = await users_col.count_documents({})
-    total_pending = await purchases_col.count_documents({"status": "pending"})
-    total_approved = await purchases_col.count_documents({"status": "approved"})
-    total_rejected = await purchases_col.count_documents({"status": "rejected"})
-
-    stats_text = (
-        f"ðŸ“Š <b>Bot Statistics</b>\n\n"
-        f"Total Users: <code>{total_users}</code>\n"
-        f"Pending Payments: <code>{total_pending}</code>\n"
-        f"Approved Payments: <code>{total_approved}</code>\n"
-        f"Rejected Payments: <code>{total_rejected}</code>"
-    )
+    stats_text = await get_formatted_stats_text()
     await update.message.reply_text(stats_text, parse_mode=ParseMode.HTML)
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return
-    admin_text = "ðŸ‘‘ <b>ADMIN PANEL</b>\n\nChoose an action below:"
+    admin_text = "👑 <b>ADMIN PANEL</b>\n\nChoose an action below:"
     keyboard = [
-        [InlineKeyboardButton("ðŸ“Š Stats", callback_data="admin_stats"), InlineKeyboardButton("ðŸ“¢ Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("ðŸ’³ Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("ðŸ’° Change Global Price", callback_data="set_price")],
-        [InlineKeyboardButton("ðŸ”— Change Global Link", callback_data="set_link"), InlineKeyboardButton("ðŸ“ Change Welcome", callback_data="set_welcome")],
-        [InlineKeyboardButton("ðŸ–¼ Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("ðŸŽ¥ Change HowTo Video", callback_data="set_howto_menu")],
-        [InlineKeyboardButton("ðŸ†˜ Change Support", callback_data="set_support")],
-        [InlineKeyboardButton("âž• Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("âž– Remove Admin", callback_data="remove_admin_menu")],
-        [InlineKeyboardButton("ðŸ“¦ Add Product", callback_data="add_product_menu"), InlineKeyboardButton("ðŸ—‘ï¸ Remove Product", callback_data="remove_product_menu")],
-        [InlineKeyboardButton("âœï¸ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("ðŸ“ Mega File Manager", callback_data="mega_admin_menu")],
-        [InlineKeyboardButton("ðŸ”™ Back to Menu", callback_data="main_menu")],
+        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats"), InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("💳 Change UPI ID", callback_data="set_upi"), InlineKeyboardButton("💰 Change Global Price", callback_data="set_price")],
+        [InlineKeyboardButton("🔗 Change Global Link", callback_data="set_link"), InlineKeyboardButton("📝 Change Welcome", callback_data="set_welcome")],
+        [InlineKeyboardButton("🖼 Change Start Photo", callback_data="set_start_photo_menu"), InlineKeyboardButton("🎥 Change HowTo Video", callback_data="set_howto_menu")],
+        [InlineKeyboardButton("🆘 Change Support", callback_data="set_support")],
+        [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
+        [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
+        [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
     await update.message.reply_text(admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
