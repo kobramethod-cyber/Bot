@@ -6,7 +6,7 @@ import time
 import asyncio
 import sys
 import platform
-import random
+import uuid
 import requests
 from datetime import datetime, timedelta
 from flask import Flask
@@ -142,6 +142,10 @@ def get_user_mention(user) -> str:
         return f"@{user.username}"
     first_name = user.first_name or "User"
     return f'<a href="tg://user?id={user.id}">{first_name}</a>'
+
+
+def generate_unique_order_id() -> str:
+    return f"order{uuid.uuid4().hex[:12]}"
 
 
 def verify_bharatpe_transaction(expected_amount: float) -> bool:
@@ -566,18 +570,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
 
         p_name = plan.get("name", "Mega Plan")
-        base_price = float(plan.get("price", 100))
-        unique_paise = random.randint(1, 99) / 100.0
-        final_price = round(base_price + unique_paise, 2)
+        final_price = float(plan.get("price", 100))
         
+        order_id = generate_unique_order_id()
         current_upi = await get_setting("upi_id")
 
         qr_bio = generate_upi_qr(current_upi, final_price, name=f"Mega {p_name}")
         payment_text = (
             "✦ <b>MEGA PAYMENT</b>\n\n"
             f"📦 Plan: {p_name}\n"
-            f"🔹 Exact Amount to Pay: <b>₹{final_price:.2f}</b>\n"
-            f"⚠️ <i>Please pay the EXACT amount above for Instant Auto-Verification!</i>\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n"
+            f"🔹 Exact Amount to Pay: <b>₹{final_price:.0f}</b>\n"
             f"🔹 Validity: {p_name}\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -591,6 +594,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data["mega_selected_plan_id"] = plan_id
         context.user_data["mega_selected_plan_name"] = p_name
         context.user_data["mega_selected_plan_price"] = final_price
+        context.user_data["mega_selected_order_id"] = order_id
 
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mega_access_menu")]]
 
@@ -626,7 +630,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     elif query.data == "mega_add_plan_menu":
         if not await is_admin(user.id):
             return ConversationHandler.END
-        await query.message.reply_text("➕ Send plan details in this format:\n`Plan Name | Price | Days`\n\nExample:\n`7 Day | 150 | 7`\n(Use 0 days for Permanent)", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("➕ Send plan details in this format:\n`Name | Price | Days`\n\nExample:\n`7 Day | 150 | 7`\n(Use 0 days for Permanent)", parse_mode=ParseMode.HTML)
         return MEGA_ADDING_PLAN
 
     elif query.data == "mega_remove_plan_menu":
@@ -767,18 +771,17 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             product = await products_col.find_one({"product_id": "default"})
         
         prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
-        base_price = float(product.get("price", await get_setting("price")) if product else await get_setting("price"))
-        unique_paise = random.randint(1, 99) / 100.0
-        final_price = round(base_price + unique_paise, 2)
+        final_price = float(product.get("price", await get_setting("price")) if product else await get_setting("price"))
 
+        order_id = generate_unique_order_id()
         current_upi = await get_setting("upi_id")
 
         qr_bio = generate_upi_qr(current_upi, final_price, name=prod_name)
         payment_text = (
             "✦ <b>PREMIUM PAYMENT</b>\n\n"
             f"📦 Product: {prod_name}\n"
-            f"🔹 Exact Amount to Pay: <b>₹{final_price:.2f}</b>\n"
-            f"⚠️ <i>Please pay the EXACT amount above for Instant Auto-Verification!</i>\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n"
+            f"🔹 Exact Amount to Pay: <b>₹{final_price:.0f}</b>\n"
             "🔹 Validity: Lifetime\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -792,6 +795,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         context.user_data["selected_product_id"] = prod_id
         context.user_data["selected_product_name"] = prod_name
         context.user_data["selected_product_price"] = final_price
+        context.user_data["selected_order_id"] = order_id
 
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="main_menu")]]
 
@@ -1289,6 +1293,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         p_name = plan.get("name", "Mega Plan")
         p_price = float(context.user_data.get("mega_selected_plan_price", plan.get("price", 100)))
+        order_id = context.user_data.get("mega_selected_order_id", generate_unique_order_id())
 
         await update.message.reply_text("🔍 Verifying your payment automatically via BharatPe...")
         is_verified = verify_bharatpe_transaction(p_price)
@@ -1329,6 +1334,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await mega_purchases_col.insert_one({
                 "user_id": user.id,
                 "username": user_mention,
+                "order_id": order_id,
                 "plan_id": mega_plan_id,
                 "plan_name": p_name,
                 "amount": p_price,
@@ -1339,18 +1345,21 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             success_msg = (
                 "✅ <b>Payment Verified Automatically!</b>\n\n"
                 f"Hello {user_mention},\n\n"
+                f"🆔 Order ID: <code>{order_id}</code>\n\n"
                 "🔐 Here's your exclusive access link to join the channel:\n\n"
                 f"🔗 {invite_link}\n\n"
                 "This link is valid for 1 member only."
             )
             await update.message.reply_text(success_msg, parse_mode=ParseMode.HTML)
             context.user_data.pop("mega_selected_plan_id", None)
+            context.user_data.pop("mega_selected_order_id", None)
             return ConversationHandler.END
 
         else:
             purchase_doc = {
                 "user_id": user.id,
                 "username": user_mention,
+                "order_id": order_id,
                 "plan_id": mega_plan_id,
                 "plan_name": p_name,
                 "amount": p_price,
@@ -1362,6 +1371,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             review_msg = (
                 "✅ <b>Payment Verification Under Review</b>\n\n"
                 f"Hello {user_mention},\n\n"
+                f"🆔 Order ID: <code>{order_id}</code>\n\n"
                 "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
                 "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
                 f"👤 Admin: {support_username} ⏳ Status: Pending Verification\n\n"
@@ -1376,10 +1386,12 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             forward_caption = (
                 f"🔔 <b>New Mega Payment Review (Auto-Check Failed)</b>\n\n"
                 f"👤 User: {user_mention} (ID: <code>{user.id}</code>)\n"
+                f"🆔 Order ID: <code>{order_id}</code>\n"
                 f"📦 Plan: {p_name}\n"
-                f"💰 Amount Expected: ₹{p_price:.2f}"
+                f"💰 Amount Expected: ₹{p_price:.0f}"
             )
             context.user_data.pop("mega_selected_plan_id", None)
+            context.user_data.pop("mega_selected_order_id", None)
 
             all_admins = INITIAL_ADMIN_IDS.copy()
             async for adm in admins_col.find({}):
@@ -1400,6 +1412,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     prod_name = product.get("name", "PREMIUM ACCESS") if product else "PREMIUM ACCESS"
     current_price = float(context.user_data.get("selected_product_price", product.get("price", await get_setting("price")) if product else await get_setting("price")))
+    order_id = context.user_data.get("selected_order_id", generate_unique_order_id())
     raw_group_link = product.get("group_link") if product and product.get("group_link") else await get_setting("group_link")
     group_link = await verify_link_and_get_valid(context, prod_name, raw_group_link)
 
@@ -1410,6 +1423,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await purchases_col.insert_one({
             "user_id": user.id,
             "username": user_mention,
+            "order_id": order_id,
             "product_id": prod_id,
             "product_name": prod_name,
             "amount": current_price,
@@ -1420,17 +1434,20 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         success_msg = (
             "✅ <b>Payment Verified Automatically!</b>\n\n"
             f"Hello {user_mention},\n\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n\n"
             "Thank you for your payment 💕\n\n"
             "🔗 Your private channel/product link 👇\n"
             f"{group_link}"
         )
         await update.message.reply_text(success_msg, parse_mode=ParseMode.HTML)
+        context.user_data.pop("selected_order_id", None)
         return ConversationHandler.END
 
     else:
         purchase_doc = {
             "user_id": user.id,
             "username": user_mention,
+            "order_id": order_id,
             "product_id": prod_id,
             "product_name": prod_name,
             "amount": current_price,
@@ -1442,6 +1459,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         review_msg = (
             "✅ <b>Payment Verification Under Review</b>\n\n"
             f"Hello {user_mention},\n\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n\n"
             "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
             "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
             f"👤 Admin: {support_username} ⏳ Status: Pending Verification\n\n"
@@ -1456,8 +1474,9 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         forward_caption = (
             f"🔔 <b>New Payment Review (Auto-Check Failed)</b>\n\n"
             f"👤 User: {user_mention} (ID: <code>{user.id}</code>)\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n"
             f"📦 Product: {prod_name}\n"
-            f"💰 Amount Expected: ₹{current_price:.2f}"
+            f"💰 Amount Expected: ₹{current_price:.0f}"
         )
 
         all_admins = INITIAL_ADMIN_IDS.copy()
@@ -1471,6 +1490,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 pass
 
+        context.user_data.pop("selected_order_id", None)
     return ConversationHandler.END
 
 
@@ -1788,7 +1808,7 @@ def main():
         if application.job_queue:
             application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
             application.job_queue.run_repeating(check_all_product_links_periodically, interval=3600, first=60)
-        logger.info("Bot is up and running with unique amount auto-verification...")
+        logger.info("Bot is up and running with Unique Order IDs and no decimals...")
 
     app.post_init = post_init
 
