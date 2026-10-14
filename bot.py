@@ -1060,7 +1060,9 @@ async def mega_change_link_receive(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
     new_link = update.message.text.strip()
     await set_setting("mega_group_link", new_link)
-    await update.message.reply_text("✅ Mega Group Chat ID/Link Updated Successfully")
+    # Reset monitoring tracking when link changes
+    await settings_col.update_one({"key": "mega_group_link_alert_sent"}, {"$set": {"value": False}}, upsert=True)
+    await update.message.reply_text("✅ Mega Group Chat ID/Link Updated Successfully & Link Expiry Monitoring Reset!")
     return ConversationHandler.END
 
 
@@ -1147,7 +1149,8 @@ async def add_product_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
         "product_id": product_id,
         "name": name,
         "price": price,
-        "group_link": link
+        "group_link": link,
+        "link_alert_sent": False
     })
     await update.message.reply_text(f"✅ Product '{name}' added successfully with unique link and price!")
     return ConversationHandler.END
@@ -1181,8 +1184,8 @@ async def edit_product_link_receive(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     p_id = context.user_data.get("editing_product_id")
     new_link = update.message.text.strip()
-    await products_col.update_one({"product_id": p_id}, {"$set": {"group_link": new_link}})
-    await update.message.reply_text("✅ Product link updated successfully!")
+    await products_col.update_one({"product_id": p_id}, {"$set": {"group_link": new_link, "link_alert_sent": False}})
+    await update.message.reply_text("✅ Product link updated successfully & monitoring reset!")
     return ConversationHandler.END
 
 
@@ -1206,7 +1209,13 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user = update.effective_user
     photo_id = update.message.photo[-1].file_id
-    username = f"@{user.username}" if user.username else "No Username"
+    
+    if user.username:
+        customer_mention = f"@{user.username}"
+    else:
+        customer_mention = f"<a href=\"tg://user?id={user.id}\">{user.first_name}</a>"
+
+    support_username = await get_setting("support_username")
 
     mega_plan_id = context.user_data.get("mega_selected_plan_id")
     if mega_plan_id:
@@ -1224,7 +1233,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         purchase_doc = {
             "user_id": user.id,
-            "username": username,
+            "username": user.username or "",
             "plan_id": mega_plan_id,
             "plan_name": p_name,
             "amount": p_price,
@@ -1233,10 +1242,16 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         }
         await mega_purchases_col.insert_one(purchase_doc)
 
-        await update.message.reply_text(
-            "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
-            parse_mode=ParseMode.HTML,
+        pending_msg = (
+            "✅ Payment Verification Under Review\n\n"
+            f"Hello {customer_mention},\n\n"
+            "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
+            "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
+            f"👤 Admin: {support_username}\n"
+            "⏳ Status: Pending Verification\n\n"
+            "Thank you for your patience and cooperation! 🙏"
         )
+        await update.message.reply_text(pending_msg, parse_mode=ParseMode.HTML)
 
         admin_keyboard = [
             [
@@ -1248,7 +1263,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         forward_caption = (
             f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
             f"👤 User ID: <code>{user.id}</code>\n"
-            f"🔗 Username: {username}\n"
+            f"🔗 Customer: {customer_mention}\n"
             f"📦 Plan: {p_name}\n"
             f"💰 Amount: ₹{p_price}\n\n"
             f"Please check the screenshot below:"
@@ -1290,7 +1305,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     purchase_doc = {
         "user_id": user.id,
-        "username": username,
+        "username": user.username or "",
         "product_id": prod_id,
         "product_name": prod_name,
         "amount": current_price,
@@ -1299,10 +1314,16 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     }
     await purchases_col.insert_one(purchase_doc)
 
-    await update.message.reply_text(
-        "✅ <b>Screenshot Received Successfully!</b>\n\nYour payment has been sent to admins for verification. Please wait a moment.",
-        parse_mode=ParseMode.HTML,
+    pending_msg = (
+        "✅ Payment Verification Under Review\n\n"
+        f"Hello {customer_mention},\n\n"
+        "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
+        "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
+        f"👤 Admin: {support_username}\n"
+        "⏳ Status: Pending Verification\n\n"
+        "Thank you for your patience and cooperation! 🙏"
     )
+    await update.message.reply_text(pending_msg, parse_mode=ParseMode.HTML)
 
     admin_keyboard = [
         [
@@ -1314,7 +1335,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     forward_caption = (
         f"🔔 <b>New Payment Verification Request!</b>\n\n"
         f"👤 User ID: <code>{user.id}</code>\n"
-        f"🔗 Username: {username}\n"
+        f"🔗 Customer: {customer_mention}\n"
         f"📦 Product: {prod_name}\n"
         f"💰 Amount: ₹{current_price}\n\n"
         f"Please check the screenshot below:"
@@ -1352,6 +1373,17 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data[0]
     target_user_id = int(data[1])
 
+    support_username = await get_setting("support_username")
+    
+    try:
+        target_user = await context.bot.get_chat(target_user_id)
+        if target_user.username:
+            customer_mention = f"@{target_user.username}"
+        else:
+            customer_mention = f"<a href=\"tg://user?id={target_user_id}\">{target_user.first_name or 'Customer'}</a>"
+    except Exception:
+        customer_mention = f"<a href=\"tg://user?id={target_user_id}\">Customer</a>"
+
     if action in ["megaapprove", "megareject"]:
         purchase = await mega_purchases_col.find_one({"user_id": target_user_id, "status": "pending"})
         if not purchase:
@@ -1363,7 +1395,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         admin_name = query.from_user.first_name or "Admin"
-        support_username = await get_setting("support_username")
 
         if action == "megaapprove":
             await mega_purchases_col.update_one(
@@ -1436,7 +1467,14 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"$set": {"status": "rejected"}},
             )
 
-            reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+            reject_msg = (
+                "⚠️ PAYMENT VERIFICATION FAILED\n\n"
+                f"Dear {customer_mention},\n\n"
+                f"Unfortunately, your payment could not be verified. Please contact our Admin {support_username} to resolve this issue and receive further assistance.\n\n"
+                "📌 Status: Verification Failed\n"
+                f"👤 Contact Admin: {support_username}\n\n"
+                "Thank you for your patience and cooperation. 🙏"
+            )
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
@@ -1461,7 +1499,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     admin_name = query.from_user.first_name or "Admin"
-    support_username = await get_setting("support_username")
 
     prod_id = purchase.get("product_id", "default")
     product = await products_col.find_one({"product_id": prod_id})
@@ -1505,7 +1542,14 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"status": "rejected"}},
         )
 
-        reject_msg = f"❌ Payment Verification Failed\n\nPlease contact admin:\n{support_username}"
+        reject_msg = (
+            "⚠️ PAYMENT VERIFICATION FAILED\n\n"
+            f"Dear {customer_mention},\n\n"
+            f"Unfortunately, your payment could not be verified. Please contact our Admin {support_username} to resolve this issue and receive further assistance.\n\n"
+            "📌 Status: Verification Failed\n"
+            f"👤 Contact Admin: {support_username}\n\n"
+            "Thank you for your patience and cooperation. 🙏"
+        )
         try:
             await context.bot.send_message(
                 chat_id=target_user_id, text=reject_msg, parse_mode=ParseMode.HTML
@@ -1567,6 +1611,86 @@ async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             await mega_subs_col.update_one({"user_id": user_id}, {"$set": {"status": "expired"}})
     except Exception as e:
         logger.error(f"Error in check_expiring_subscriptions job: {e}")
+
+
+async def check_invite_link_validity(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Background monitoring job to check product/group invite links for validity/expiry
+    using Telegram Bot API capabilities (e.g., getting chat/invite link details where supported).
+    """
+    try:
+        all_admins = INITIAL_ADMIN_IDS.copy()
+        async for adm in admins_col.find({}):
+            if adm["user_id"] not in all_admins:
+                all_admins.append(adm["user_id"])
+
+        # 1. Monitor products collection links
+        products = await products_col.find({}).to_list(length=100)
+        for prod in products:
+            p_name = prod.get("name", "Product")
+            link = prod.get("group_link", "")
+            alert_sent = prod.get("link_alert_sent", False)
+            
+            is_invalid = False
+            if link.startswith("-100") or link.startswith("@") or link.startswith("https://t.me/+"):
+                # If it's a chat ID or public username/invite link, we can check via get_chat if accessible
+                try:
+                    if link.startswith("-100") or link.startswith("@"):
+                        await context.bot.get_chat(chat_id=link)
+                except Exception:
+                    is_invalid = True
+            else:
+                if not link:
+                    is_invalid = True
+
+            if is_invalid and not alert_sent:
+                alert_text = (
+                    "⚠️ PRODUCT INVITE LINK ALERT\n\n"
+                    f"📦 Product Name: {p_name}\n\n"
+                    "🔗 Status: Old Invite Link Expired / Invalid\n\n"
+                    "❌ This product's old Telegram invitation link is no longer valid.\n\n"
+                    "🛠️ Action Required: Please update the product with a new valid invitation link."
+                )
+                for admin_id in all_admins:
+                    try:
+                        await context.bot.send_message(chat_id=admin_id, text=alert_text, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        logger.error(f"Failed to send link alert to admin {admin_id}: {e}")
+                
+                await products_col.update_one({"product_id": prod.get("product_id")}, {"$set": {"link_alert_sent": True}})
+
+        # 2. Monitor global Mega group link
+        mega_link = await get_setting("mega_group_link")
+        mega_alert_doc = await settings_col.find_one({"key": "mega_group_link_alert_sent"})
+        mega_alert_sent = mega_alert_doc.get("value", False) if mega_alert_doc else False
+
+        mega_invalid = False
+        if mega_link and (mega_link.startswith("-100") or mega_link.startswith("@")):
+            try:
+                await context.bot.get_chat(chat_id=mega_link)
+            except Exception:
+                mega_invalid = True
+        elif not mega_link:
+            mega_invalid = True
+
+        if mega_invalid and not mega_alert_sent:
+            alert_text = (
+                "⚠️ PRODUCT INVITE LINK ALERT\n\n"
+                "📦 Product Name: Mega Access Group\n\n"
+                "🔗 Status: Old Invite Link Expired / Invalid\n\n"
+                "❌ This product's old Telegram invitation link is no longer valid.\n\n"
+                "🛠️ Action Required: Please update the product with a new valid invitation link."
+            )
+            for admin_id in all_admins:
+                try:
+                    await context.bot.send_message(chat_id=admin_id, text=alert_text, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    logger.error(f"Failed to send mega link alert to admin {admin_id}: {e}")
+            
+            await settings_col.update_one({"key": "mega_group_link_alert_sent"}, {"$set": {"value": True}}, upsert=True)
+
+    except Exception as e:
+        logger.error(f"Error in check_invite_link_validity job: {e}")
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1706,6 +1830,7 @@ def main():
         await initialize_settings()
         if application.job_queue:
             application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
+            application.job_queue.run_repeating(check_invite_link_validity, interval=300, first=30)
         logger.info("Bot is up and running...")
 
     app.post_init = post_init
