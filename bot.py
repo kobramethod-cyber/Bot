@@ -16,6 +16,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import Forbidden, RetryAfter, TimedOut, NetworkError, BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1701,95 +1702,174 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_BROADCAST
 
 
+async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text):
+    """Run broadcast independently of Telegram update handling."""
+    start_time = time.monotonic()
+    sent = failed = blocked = processed = 0
+    total = 0
+    last_update = start_time
+    bot = application.bot
+
+    async def update_progress(completed=False):
+        elapsed = max(time.monotonic() - start_time, 0.001)
+        remaining = max(total - processed, 0)
+        eta = int(remaining * elapsed / processed) if processed else 0
+        mins, secs = divmod(eta, 60)
+        if completed:
+            duration = int(elapsed)
+            dm, ds = divmod(duration, 60)
+            message = (
+                "✅ <b>Broadcast Completed!</b>\n\n"
+                f"📊 Total Target: <code>{total}</code>\n"
+                f"✅ Sent: <code>{sent}</code>\n"
+                f"🚫 Newly Blocked: <code>{blocked}</code>\n"
+                f"❌ Other Failures: <code>{failed}</code>\n"
+                f"⏱️ Time Taken: <code>{dm}m {ds}s</code>"
+            )
+        else:
+            percent = int(processed * 100 / total) if total else 100
+            message = (
+                "🚀 <b>Broadcast In Progress...</b>\n\n"
+                f"📊 Total Target: <code>{total}</code>\n"
+                f"✅ Sent: <code>{sent}</code>\n"
+                f"🚫 Newly Blocked: <code>{blocked}</code>\n"
+                f"❌ Other Failures: <code>{failed}</code>\n"
+                f"⏳ Remaining: <code>{remaining}</code>\n"
+                f"📈 Progress: <code>{percent}%</code>\n"
+                f"⏱️ Estimated Time Left: <code>{mins}m {secs}s</code>"
+            )
+        try:
+            await bot.edit_message_text(
+                chat_id=admin_chat_id,
+                message_id=status_message_id,
+                text=message,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.warning("Could not update broadcast progress: %s", exc)
+            if completed:
+                try:
+                    await bot.send_message(chat_id=admin_chat_id, text=message, parse_mode=ParseMode.HTML)
+                except Exception:
+                    logger.exception("Could not send broadcast completion message")
+
+    try:
+        # A user is considered reachable only after Telegram accepts a send.
+        # Existing blocked/banned users are skipped without attempting delivery.
+        query = {"status": {"$nin": ["blocked", "banned"]}, "user_id": {"$exists": True}}
+        total = await users_col.count_documents(query)
+        if not total:
+            await bot.edit_message_text(
+                chat_id=admin_chat_id,
+                message_id=status_message_id,
+                text="⚠️ No eligible users found for broadcast.",
+            )
+            return
+
+        async for user in users_col.find(query, {"user_id": 1}):
+            uid = user.get("user_id")
+            if not isinstance(uid, int):
+                failed += 1
+                processed += 1
+                continue
+
+            result = "failed"
+            for attempt in range(3):
+                try:
+                    if photo_file:
+                        await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
+                    else:
+                        await bot.send_message(chat_id=uid, text=body_text)
+                    result = "sent"
+                    break
+                except Forbidden as exc:
+                    # The bot cannot message this user. Keep this status for later broadcasts.
+                    try:
+                        await users_col.update_one(
+                            {"user_id": uid},
+                            {"$set": {"status": "blocked", "broadcast_error": str(exc)}},
+                        )
+                    except Exception:
+                        logger.exception("Could not mark user %s blocked", uid)
+                    result = "blocked"
+                    break
+                except RetryAfter as exc:
+                    await asyncio.sleep(min(float(exc.retry_after) + 1, 120))
+                except (TimedOut, NetworkError) as exc:
+                    logger.warning("Broadcast temporary error for %s: %s", uid, exc)
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                except BadRequest as exc:
+                    logger.warning("Broadcast bad request for %s: %s", uid, exc)
+                    break
+                except Exception:
+                    logger.exception("Broadcast delivery failed for user %s", uid)
+                    break
+
+            if result == "sent":
+                sent += 1
+            elif result == "blocked":
+                blocked += 1
+            else:
+                failed += 1
+            processed += 1
+
+            # Limit broadcast traffic to ~20 messages/second, leaving room for
+            # regular bot messages and callback responses.
+            await asyncio.sleep(0.05)
+            now = time.monotonic()
+            if now - last_update >= 3:
+                await update_progress()
+                last_update = now
+
+        await update_progress(completed=True)
+    except Exception:
+        logger.exception("Unexpected error during broadcast")
+        try:
+            await bot.send_message(
+                chat_id=admin_chat_id,
+                text=f"⚠️ Broadcast interrupted. Sent: {sent}, blocked: {blocked}, failed: {failed}.",
+            )
+        except Exception:
+            logger.exception("Could not report broadcast interruption")
+    finally:
+        application.bot_data["broadcast_running"] = False
+
+
 async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
 
-    users = await users_col.find({}).to_list(length=100000)
-    total_users = len(users)
-    
-    if total_users == 0:
-        await update.message.reply_text("⚠️ No users found in database to broadcast.")
+    application = context.application
+    if application.bot_data.get("broadcast_running"):
+        await update.message.reply_text("⚠️ A broadcast is already running. Please wait for it to finish.")
         return ConversationHandler.END
-
-    status_msg = await update.message.reply_text(f"🚀 **Broadcast Started!**\n\nTotal Users: `{total_users}`", parse_mode=ParseMode.MARKDOWN)
 
     photo_file = update.message.photo[-1].file_id if update.message.photo else None
     caption_text = update.message.caption or ""
     body_text = update.message.text or ""
 
-    async def send_msg(uid):
-        try:
-            if photo_file:
-                await context.bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
-            else:
-                await context.bot.send_message(chat_id=uid, text=body_text)
-            return True
-        except Exception:
-            return False
-
-    success, fail = 0, 0
-    chunk_size = 30
-    start_time = time.time()
-    last_update_time = time.time()
-
-    for i in range(0, total_users, chunk_size):
-        chunk = users[i:i + chunk_size]
-        tasks = [send_msg(user["user_id"]) for user in chunk]
-        results = await asyncio.gather(*tasks)
-        
-        for res in results:
-            if res:
-                success += 1
-            else:
-                fail += 1
-        
-        processed = success + fail
-        remaining = total_users - processed
-        
-        current_time = time.time()
-        if current_time - last_update_time >= 3 or processed == total_users:
-            elapsed = current_time - start_time
-            rate = processed / elapsed if elapsed > 0 else 1
-            eta_seconds = int(remaining / rate) if rate > 0 else 0
-            
-            eta_minutes, eta_secs = divmod(eta_seconds, 60)
-            eta_str = f"{eta_minutes}m {eta_secs}s" if eta_minutes > 0 else f"{eta_secs}s"
-            
-            progress_percent = int((processed / total_users) * 100)
-            
-            progress_text = (
-                f"🚀 <b>Broadcast In Progress...</b>\n\n"
-                f"📊 <b>Total Target:</b> <code>{total_users}</code>\n"
-                f"✅ <b>Sent:</b> <code>{success}</code>\n"
-                f"❌ <b>Failed:</b> <code>{fail}</code>\n"
-                f"⏳ <b>Remaining:</b> <code>{remaining}</code>\n"
-                f"📈 <b>Progress:</b> <code>{progress_percent}%</code>\n"
-                f"⏱️ <b>Estimated Time Left:</b> <code>{eta_str}</code>"
-            )
-            try:
-                await status_msg.edit_text(progress_text, parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-            last_update_time = current_time
-            
-        await asyncio.sleep(0.1)
-
-    total_time = int(time.time() - start_time)
-    t_min, t_sec = divmod(total_time, 60)
-    time_taken_str = f"{t_min}m {t_sec}s" if t_min > 0 else f"{t_sec}s"
-
-    final_text = (
-        f"✅ <b>Broadcast Completed!</b>\n\n"
-        f"📊 Total Target: <code>{total_users}</code>\n"
-        f"✅ Success Count: <code>{success}</code>\n"
-        f"❌ Failed Count: <code>{fail}</code>\n"
-        f"⏱️ Total Time Taken: <code>{time_taken_str}</code>"
-    )
+    # Set the flag before yielding to avoid starting two simultaneous broadcasts.
+    application.bot_data["broadcast_running"] = True
     try:
-        await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+        status_msg = await update.message.reply_text(
+            "🚀 Broadcast started in background. You can keep using the bot."
+        )
+        application.create_task(
+            _broadcast_worker(
+                application,
+                update.effective_chat.id,
+                status_msg.message_id,
+                photo_file,
+                caption_text,
+                body_text,
+            ),
+            name="broadcast_worker",
+        )
     except Exception:
-        await update.message.reply_text(final_text, parse_mode=ParseMode.HTML)
+        application.bot_data["broadcast_running"] = False
+        logger.exception("Failed to start background broadcast")
+        await update.message.reply_text("❌ Could not start broadcast. Please try again.")
 
     return ConversationHandler.END
 
