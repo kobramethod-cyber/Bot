@@ -15,7 +15,7 @@ from threading import Thread
 from telegram import (
     InputFile,
     InlineKeyboardButton as TelegramInlineKeyboardButton,
-    InlineKeyboardMarkup,
+    InlineKeyboardMarkup as TelegramInlineKeyboardMarkup,
     Update,
 )
 from telegram.constants import ParseMode
@@ -37,71 +37,36 @@ try:
 except ImportError:
     CopyTextButton = None  # Older python-telegram-bot versions
 
-# Button styling only. Existing callback data, links and handlers are unchanged.
-# Telegram Bot API supports primary (blue), success (green), danger (red),
-# and default (client-themed). Other colours in design mockups are not API styles.
-def _button_color_style(label, callback_data):
-    """Choose Telegram's supported button style for existing and future menus.
-
-    Only primary (blue), success (green), danger (red), and the client's
-    default style are supported. Custom image colours cannot be reproduced.
-    """
-    label = (label or "").lower()
-    action = (callback_data or "").lower()
-
-    # Always prioritize destructive operations, including newly added ones.
-    if (action.startswith(("delprod_", "megadelplan_", "reject_", "megareject_"))
-            or action in {"bc_stop", "bc_cancel", "remove_admin_menu",
-                          "remove_product_menu", "mega_remove_plan_menu"}
-            or any(w in label for w in ("remove", "delete", "reject", "cancel",
-                                        "stop", "❌", "🗑", "➖"))):
-        return "danger"
-
-    # Main menu and product/plan purchase buttons, including future products.
-    if (action.startswith(("buy_", "megabuy_", "approve_", "megaapprove_"))
-            or action in {"bc_confirm", "bc_resume", "admin_broadcast",
-                          "mega_add_plan_menu", "add_product_menu", "add_admin_menu"}
-            or any(w in label for w in ("buy", "approve", "resume", "confirm",
-                                        "broadcast", "➕", "🛒", "✅"))):
-        return "success"
-
-    # Back/help/support remain neutral to distinguish navigation.
-    if (action in {"main_menu", "how"}
-            or label.startswith(("🔙", "⬅", "◀"))
-            or "back" in label or "support" in label or "how to buy" in label):
-        return None
-
-    # All other administrative and navigation actions use blue.
-    if (action.startswith(("editprod_", "copyprod_", "copymega_", "epname_",
-                           "epprice_", "eplink_", "set_", "mega_set_",
-                           "mega_change_", "megachprice_", "megachdays_"))
-            or action in {"mega_access_menu", "admin_panel", "manage_products_menu",
-                          "mega_admin_menu", "mega_copy_plan_menu", "admin_stats",
-                          "mega_stats", "bc_pause"}
-            or any(w in label for w in ("product", "mega", "plan", "stats",
-                                        "price", "change", "manage", "copy",
-                                        "settings", "📦", "📁", "📋", "📊"))):
-        return "primary"
-
-    # New unknown buttons get blue, so they aren't silently unstyled.
-    return "primary"
+# Button styling only: stable, repeating 12-button colour sequence.
+# Telegram supports success=green, primary=blue, danger=red, and default.
+# Sequence is applied independently to every inline keyboard, row by row.
+# Callback data, URLs, payment logic, broadcasts and handlers stay unchanged.
+BUTTON_COLOUR_SEQUENCE = (
+    "success", "primary", "danger", None,
+    "primary", "success", None, "danger",
+    "success", None, "primary", "danger",
+)
 
 
-class InlineKeyboardButton(TelegramInlineKeyboardButton):
-    """Attach official Telegram Bot API style to every inline button.
+# Keep the original button constructor for all existing and future buttons.
+InlineKeyboardButton = TelegramInlineKeyboardButton
 
-    PTB 22.8 accepts additional Bot API fields via api_kwargs. The actual
-    display colour depends on whether the Telegram client supports styles.
-    """
 
-    def __init__(self, text, *args, **kwargs):
-        callback_data = kwargs.get("callback_data")
-        style = _button_color_style(text, callback_data)
-        if style:
-            api_kwargs = dict(kwargs.get("api_kwargs") or {})
-            api_kwargs.setdefault("style", style)
-            kwargs["api_kwargs"] = api_kwargs
-        super().__init__(text, *args, **kwargs)
+class InlineKeyboardMarkup(TelegramInlineKeyboardMarkup):
+    """Colour each keyboard in reading order without changing button actions."""
+
+    def __init__(self, inline_keyboard, *args, **kwargs):
+        for index, button in enumerate(
+            button for row in inline_keyboard for button in row
+        ):
+            style = BUTTON_COLOUR_SEQUENCE[index % len(BUTTON_COLOUR_SEQUENCE)]
+            # api_kwargs is a normal dictionary in python-telegram-bot.
+            # Remove style for the fourth (default) colour.
+            if style is None:
+                button.api_kwargs.pop("style", None)
+            else:
+                button.api_kwargs["style"] = style
+        super().__init__(inline_keyboard, *args, **kwargs)
 
 
 # Logging Setup
