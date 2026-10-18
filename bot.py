@@ -1897,47 +1897,49 @@ async def update_broadcast_progress(bot, chat_id, msg_id, state):
 
 
 async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text, state):
+    """Original 30-user concurrent batches, with pause/stop between batches."""
     bot = application.bot
     try:
         users = await users_col.find({}, {"user_id": 1}).to_list(length=None)
         state["total"] = len(users)
         last_update = time.monotonic()
-        # Send sequentially so Pause/Stop takes effect between individual users.
-        for record in users:
+
+        async def send_msg(uid):
+            if not isinstance(uid, int):
+                return False
+            for attempt in range(3):
+                try:
+                    if photo_file:
+                        await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
+                    else:
+                        await bot.send_message(chat_id=uid, text=body_text)
+                    return True
+                except RetryAfter as exc:
+                    await asyncio.sleep(min(float(exc.retry_after) + 1, 120))
+                except (TimedOut, NetworkError):
+                    if attempt < 2:
+                        await asyncio.sleep(attempt + 1)
+                except Forbidden:
+                    return False
+                except Exception as exc:
+                    logger.warning("Broadcast failed for %s: %s", uid, exc)
+                    return False
+            return False
+
+        # Restore the original batch size and concurrent sending behavior.
+        for i in range(0, len(users), 30):
             while state["status"] == "paused":
                 await asyncio.sleep(0.3)
             if state["status"] == "stopped":
                 break
-            uid = record.get("user_id")
-            delivered = False
-            if isinstance(uid, int):
-                for attempt in range(3):
-                    if state["status"] == "stopped":
-                        break
-                    try:
-                        if photo_file:
-                            await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
-                        else:
-                            await bot.send_message(chat_id=uid, text=body_text)
-                        delivered = True
-                        break
-                    except RetryAfter as exc:
-                        await asyncio.sleep(min(float(exc.retry_after)+1, 120))
-                    except (TimedOut, NetworkError):
-                        await asyncio.sleep(attempt + 1)
-                    except Forbidden:
-                        break
-                    except Exception as exc:
-                        logger.warning("Broadcast failed for %s: %s", uid, exc)
-                        break
-            if state["status"] == "stopped":
-                break
-            state["success" if delivered else "fail"] += 1
-            state["processed"] += 1
-            if time.monotonic()-last_update >= 2 or state["processed"] == state["total"]:
+            chunk = users[i:i + 30]
+            results = await asyncio.gather(*(send_msg(u.get("user_id")) for u in chunk))
+            state["success"] += sum(results)
+            state["fail"] += len(results) - sum(results)
+            state["processed"] += len(results)
+            if time.monotonic() - last_update >= 2 or state["processed"] == state["total"]:
                 await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
                 last_update = time.monotonic()
-            await asyncio.sleep(0.045)
         if state["status"] != "stopped":
             state["status"] = "completed"
         await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
