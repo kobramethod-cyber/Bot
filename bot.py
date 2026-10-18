@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import io
+import copy
+from types import MappingProxyType
 import secrets
 import html
 from urllib.parse import urlencode
@@ -53,20 +55,27 @@ InlineKeyboardButton = TelegramInlineKeyboardButton
 
 
 class InlineKeyboardMarkup(TelegramInlineKeyboardMarkup):
-    """Colour each keyboard in reading order without changing button actions."""
+    """Apply colours to copies: PTB button.api_kwargs is read-only."""
 
     def __init__(self, inline_keyboard, *args, **kwargs):
-        for index, button in enumerate(
-            button for row in inline_keyboard for button in row
-        ):
-            style = BUTTON_COLOUR_SEQUENCE[index % len(BUTTON_COLOUR_SEQUENCE)]
-            # api_kwargs is a normal dictionary in python-telegram-bot.
-            # Remove style for the fourth (default) colour.
-            if style is None:
-                button.api_kwargs.pop("style", None)
-            else:
-                button.api_kwargs["style"] = style
-        super().__init__(inline_keyboard, *args, **kwargs)
+        coloured_rows = []
+        index = 0
+        for row in inline_keyboard:
+            coloured_row = []
+            for button in row:
+                style = BUTTON_COLOUR_SEQUENCE[index % len(BUTTON_COLOUR_SEQUENCE)]
+                index += 1
+                # Never mutate an existing Telegram object (its API kwargs are frozen).
+                coloured_button = copy.copy(button)
+                api_kwargs = dict(button.api_kwargs or {})
+                if style is None:
+                    api_kwargs.pop("style", None)
+                else:
+                    api_kwargs["style"] = style
+                object.__setattr__(coloured_button, "_api_kwargs", MappingProxyType(api_kwargs))
+                coloured_row.append(coloured_button)
+            coloured_rows.append(coloured_row)
+        super().__init__(coloured_rows, *args, **kwargs)
 
 
 # Logging Setup
