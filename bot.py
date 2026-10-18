@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import io
+import secrets
+from urllib.parse import urlencode
 import logging
 import os
 import time
@@ -192,8 +194,14 @@ async def initialize_settings():
             await mega_plans_col.update_one({"plan_id": p["plan_id"]}, {"$set": p}, upsert=True)
 
 
+def new_order_id():
+    # Cryptographically random order ID.
+    return "ORD" + secrets.token_hex(7).upper()
+
+
 def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
-    upi_url = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR"
+    params = {"pa": upi_id, "pn": name, "am": str(amount), "cu": "INR"}
+    upi_url = "upi://pay?" + urlencode(params)
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -501,11 +509,14 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.message.reply_text("⚠️ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
+        order_id = new_order_id()
+        context.user_data["mega_order_id"] = order_id
         qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}")
         payment_text = (
             "✦ <b>MEGA PAYMENT</b>\n\n"
             f"📦 Plan: {p_name}\n"
             f"🔹 Amount: ₹{p_price}\n"
+            f"🧾 Order ID: <code>{order_id}</code>\n"
             f"🔹 Validity: {p_name}\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -703,11 +714,15 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.message.reply_text("⚠ You already have a payment verification pending with admins.")
             return ConversationHandler.END
 
+        order_id = new_order_id()
+        context.user_data["order_id"] = order_id
+        context.user_data.pop("mega_selected_plan_id", None)
         qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
         payment_text = (
             "✦ <b>PREMIUM PAYMENT</b>\n\n"
             f"📦 Product: {prod_name}\n"
             f"🔹 Amount: ₹{current_price}\n"
+            f"🧾 Order ID: <code>{order_id}</code>\n"
             "🔹 Validity: Lifetime\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -1236,6 +1251,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "user_id": user.id,
             "username": user.username or "",
             "plan_id": mega_plan_id,
+            "order_id": context.user_data.get("mega_order_id") or new_order_id(),
             "plan_name": p_name,
             "amount": p_price,
             "status": "pending",
@@ -1245,6 +1261,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         pending_msg = (
             "✅ Payment Verification Under Review\n\n"
+            f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
             f"Hello {customer_mention},\n\n"
             "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
             "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
@@ -1264,6 +1281,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         forward_caption = (
             f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
             f"👤 User ID: <code>{user.id}</code>\n"
+            f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
             f"🔗 Customer: {customer_mention}\n"
             f"📦 Plan: {p_name}\n"
             f"💰 Amount: ₹{p_price}\n\n"
@@ -1308,6 +1326,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "user_id": user.id,
         "username": user.username or "",
         "product_id": prod_id,
+        "order_id": context.user_data.get("order_id") or new_order_id(),
         "product_name": prod_name,
         "amount": current_price,
         "status": "pending",
@@ -1317,6 +1336,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     pending_msg = (
         "✅ Payment Verification Under Review\n\n"
+        f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
         f"Hello {customer_mention},\n\n"
         "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
         "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
@@ -1703,135 +1723,97 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text):
-    """Run broadcast independently of Telegram update handling."""
-    start_time = time.monotonic()
-    sent = failed = blocked = processed = 0
-    total = 0
-    last_update = start_time
+    """Original all-user batch broadcast, running in a background task."""
     bot = application.bot
-
-    async def update_progress(completed=False):
-        elapsed = max(time.monotonic() - start_time, 0.001)
-        remaining = max(total - processed, 0)
-        eta = int(remaining * elapsed / processed) if processed else 0
-        mins, secs = divmod(eta, 60)
-        if completed:
-            duration = int(elapsed)
-            dm, ds = divmod(duration, 60)
-            message = (
-                "✅ <b>Broadcast Completed!</b>\n\n"
-                f"📊 Total Target: <code>{total}</code>\n"
-                f"✅ Sent: <code>{sent}</code>\n"
-                f"🚫 Newly Blocked: <code>{blocked}</code>\n"
-                f"❌ Other Failures: <code>{failed}</code>\n"
-                f"⏱️ Time Taken: <code>{dm}m {ds}s</code>"
-            )
-        else:
-            percent = int(processed * 100 / total) if total else 100
-            message = (
-                "🚀 <b>Broadcast In Progress...</b>\n\n"
-                f"📊 Total Target: <code>{total}</code>\n"
-                f"✅ Sent: <code>{sent}</code>\n"
-                f"🚫 Newly Blocked: <code>{blocked}</code>\n"
-                f"❌ Other Failures: <code>{failed}</code>\n"
-                f"⏳ Remaining: <code>{remaining}</code>\n"
-                f"📈 Progress: <code>{percent}%</code>\n"
-                f"⏱️ Estimated Time Left: <code>{mins}m {secs}s</code>"
-            )
-        try:
-            await bot.edit_message_text(
-                chat_id=admin_chat_id,
-                message_id=status_message_id,
-                text=message,
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as exc:
-            logger.warning("Could not update broadcast progress: %s", exc)
-            if completed:
-                try:
-                    await bot.send_message(chat_id=admin_chat_id, text=message, parse_mode=ParseMode.HTML)
-                except Exception:
-                    logger.exception("Could not send broadcast completion message")
-
+    start_time = time.monotonic()
+    success = fail = 0
     try:
-        # A user is considered reachable only after Telegram accepts a send.
-        # Existing blocked/banned users are skipped without attempting delivery.
-        query = {"status": {"$nin": ["blocked", "banned"]}, "user_id": {"$exists": True}}
-        total = await users_col.count_documents(query)
+        # Do not silently exclude users marked blocked by an earlier broadcast.
+        users = await users_col.find({}, {"user_id": 1}).to_list(length=None)
+        total = len(users)
         if not total:
-            await bot.edit_message_text(
-                chat_id=admin_chat_id,
-                message_id=status_message_id,
-                text="⚠️ No eligible users found for broadcast.",
-            )
+            await bot.edit_message_text(chat_id=admin_chat_id, message_id=status_message_id,
+                                        text="⚠️ No users found in database.")
             return
 
-        async for user in users_col.find(query, {"user_id": 1}):
-            uid = user.get("user_id")
+        async def send_msg(uid):
             if not isinstance(uid, int):
-                failed += 1
-                processed += 1
-                continue
-
-            result = "failed"
+                return False
             for attempt in range(3):
                 try:
                     if photo_file:
                         await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
                     else:
                         await bot.send_message(chat_id=uid, text=body_text)
-                    result = "sent"
-                    break
-                except Forbidden as exc:
-                    # The bot cannot message this user. Keep this status for later broadcasts.
-                    try:
-                        await users_col.update_one(
-                            {"user_id": uid},
-                            {"$set": {"status": "blocked", "broadcast_error": str(exc)}},
-                        )
-                    except Exception:
-                        logger.exception("Could not mark user %s blocked", uid)
-                    result = "blocked"
-                    break
+                    return True
                 except RetryAfter as exc:
                     await asyncio.sleep(min(float(exc.retry_after) + 1, 120))
                 except (TimedOut, NetworkError) as exc:
-                    logger.warning("Broadcast temporary error for %s: %s", uid, exc)
+                    logger.warning("Temporary broadcast error for %s: %s", uid, exc)
                     if attempt < 2:
-                        await asyncio.sleep(2 * (attempt + 1))
-                except BadRequest as exc:
-                    logger.warning("Broadcast bad request for %s: %s", uid, exc)
-                    break
-                except Exception:
-                    logger.exception("Broadcast delivery failed for user %s", uid)
-                    break
+                        await asyncio.sleep(attempt + 1)
+                except Forbidden as exc:
+                    logger.info("Cannot deliver to user %s: %s", uid, exc)
+                    return False
+                except Exception as exc:
+                    logger.warning("Broadcast failed for %s: %s", uid, exc)
+                    return False
+            return False
 
-            if result == "sent":
-                sent += 1
-            elif result == "blocked":
-                blocked += 1
-            else:
-                failed += 1
-            processed += 1
-
-            # Limit broadcast traffic to ~20 messages/second, leaving room for
-            # regular bot messages and callback responses.
-            await asyncio.sleep(0.05)
+        last_update = start_time
+        for i in range(0, total, 30):
+            chunk = users[i:i + 30]
+            results = await asyncio.gather(*(send_msg(u.get("user_id")) for u in chunk))
+            success += sum(results)
+            fail += len(results) - sum(results)
+            processed = success + fail
             now = time.monotonic()
-            if now - last_update >= 3:
-                await update_progress()
+            if now - last_update >= 3 or processed == total:
+                elapsed = max(now - start_time, 0.001)
+                remaining = total - processed
+                eta = int(remaining * elapsed / processed)
+                minutes, seconds = divmod(eta, 60)
+                progress_text = (
+                    "🚀 <b>Broadcast In Progress...</b>\n\n"
+                    f"📊 Total Target: <code>{total}</code>\n"
+                    f"✅ Sent: <code>{success}</code>\n"
+                    f"❌ Failed: <code>{fail}</code>\n"
+                    f"⏳ Remaining: <code>{remaining}</code>\n"
+                    f"📈 Progress: <code>{processed * 100 // total}%</code>\n"
+                    f"⏱️ ETA: <code>{minutes}m {seconds}s</code>"
+                )
+                try:
+                    await bot.edit_message_text(chat_id=admin_chat_id,
+                                                message_id=status_message_id,
+                                                text=progress_text, parse_mode=ParseMode.HTML)
+                except Exception as exc:
+                    logger.warning("Broadcast progress update failed: %s", exc)
                 last_update = now
+            # Slow batches enough to leave API capacity for commands and buttons.
+            await asyncio.sleep(1)
 
-        await update_progress(completed=True)
-    except Exception:
-        logger.exception("Unexpected error during broadcast")
+        elapsed = int(time.monotonic() - start_time)
+        minutes, seconds = divmod(elapsed, 60)
+        final_text = (
+            "✅ <b>Broadcast Completed!</b>\n\n"
+            f"📊 Total Target: <code>{total}</code>\n"
+            f"✅ Success: <code>{success}</code>\n"
+            f"❌ Failed: <code>{fail}</code>\n"
+            f"⏱️ Time Taken: <code>{minutes}m {seconds}s</code>"
+        )
         try:
-            await bot.send_message(
-                chat_id=admin_chat_id,
-                text=f"⚠️ Broadcast interrupted. Sent: {sent}, blocked: {blocked}, failed: {failed}.",
-            )
+            await bot.edit_message_text(chat_id=admin_chat_id, message_id=status_message_id,
+                                        text=final_text, parse_mode=ParseMode.HTML)
         except Exception:
-            logger.exception("Could not report broadcast interruption")
+            await bot.send_message(chat_id=admin_chat_id, text=final_text,
+                                   parse_mode=ParseMode.HTML)
+    except Exception:
+        logger.exception("Unexpected broadcast error")
+        try:
+            await bot.send_message(chat_id=admin_chat_id,
+                                   text=f"⚠️ Broadcast interrupted. Sent: {success}, Failed: {fail}.")
+        except Exception:
+            logger.exception("Unable to report broadcast interruption")
     finally:
         application.bot_data["broadcast_running"] = False
 
