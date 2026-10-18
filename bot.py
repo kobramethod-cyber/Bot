@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import io
 import secrets
+import html
 from urllib.parse import urlencode
 import logging
 import os
@@ -30,6 +31,11 @@ from telegram.ext import (
 )
 import motor.motor_asyncio
 import qrcode
+
+try:
+    from telegram import CopyTextButton
+except ImportError:
+    CopyTextButton = None  # Older python-telegram-bot versions
 
 # Logging Setup
 logging.basicConfig(
@@ -218,6 +224,90 @@ def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group", order_id
     img.save(bio, "PNG")
     bio.seek(0)
     return bio
+
+
+async def send_direct_payment(update, context, kind, item_id):
+    """Open a product/mega QR directly from a Telegram /start deep link."""
+    user = update.effective_user
+    if kind == "mega":
+        plan = await mega_plans_col.find_one({"plan_id": item_id})
+        if not plan:
+            await update.message.reply_text("⚠️ This Mega plan is unavailable.")
+            return ConversationHandler.END
+        if await mega_purchases_col.find_one({"user_id": user.id, "status": "pending"}):
+            await update.message.reply_text("⚠️ You already have a Mega payment awaiting verification.")
+            return ConversationHandler.END
+        name, price = plan.get("name", "Mega Plan"), plan.get("price", 100)
+        order_id = new_order_id()
+        context.user_data["mega_order_id"] = order_id
+        context.user_data["mega_selected_plan_id"] = item_id
+        context.user_data["mega_selected_plan_name"] = name
+        context.user_data["mega_selected_plan_price"] = price
+        context.user_data.pop("selected_product_id", None)
+        heading = "MEGA PAYMENT"
+        detail = f"📦 Plan: {html.escape(str(name))}\n🔹 Validity: {html.escape(str(name))}"
+    else:
+        product = await products_col.find_one({"product_id": item_id})
+        if not product:
+            await update.message.reply_text("⚠️ This product is unavailable.")
+            return ConversationHandler.END
+        if await purchases_col.find_one({"user_id": user.id, "status": "pending"}):
+            await update.message.reply_text("⚠️ You already have a payment awaiting verification.")
+            return ConversationHandler.END
+        name, price = product.get("name", "PREMIUM ACCESS"), product.get("price", 50)
+        order_id = new_order_id()
+        context.user_data["order_id"] = order_id
+        context.user_data["selected_product_id"] = item_id
+        context.user_data["selected_product_name"] = name
+        context.user_data["selected_product_price"] = price
+        context.user_data.pop("mega_selected_plan_id", None)
+        heading = "PREMIUM PAYMENT"
+        detail = f"📦 Product: {html.escape(str(name))}\n🔹 Validity: Lifetime"
+    upi = await get_setting("upi_id")
+    qr = generate_upi_qr(upi, price, name=str(name), order_id=order_id)
+    caption = (f"✦ <b>{heading}</b>\n\n{detail}\n"
+               f"💰 Amount: ₹{price}\n🆔 Order ID: <code>{order_id}</code>\n\n"
+               "Paytm • GPay • PhonePe • UPI\n\n"
+               f"UPI ID: <b>{html.escape(str(upi))}</b>\n\n"
+               "<b>AFTER PAYMENT:</b> Send payment screenshot in this chat.")
+    await update.message.reply_photo(photo=InputFile(qr, filename="qr.png"),
+                                     caption=caption, parse_mode=ParseMode.HTML)
+    return WAITING_FOR_SCREENSHOT
+
+
+async def direct_start(update, context):
+    """Handle deep links in the conversation handler, keeping screenshot state."""
+    args = context.args or []
+    if args and args[0].startswith("buy_"):
+        return await send_direct_payment(update, context, "product", args[0][4:])
+    if args and args[0].startswith("mega_"):
+        return await send_direct_payment(update, context, "mega", args[0][5:])
+    await start(update, context)
+    return ConversationHandler.END
+
+
+async def show_copy_link(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not await is_admin(query.from_user.id):
+        return ConversationHandler.END
+    data = query.data
+    is_mega = data.startswith("copymega_")
+    item_id = data[len("copymega_"):] if is_mega else data[len("copyprod_"):]
+    record = await (mega_plans_col if is_mega else products_col).find_one(
+        {"plan_id" if is_mega else "product_id": item_id})
+    if not record:
+        await query.message.reply_text("⚠️ Product/plan no longer exists.")
+        return ConversationHandler.END
+    bot_name = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_name}?start={'mega' if is_mega else 'buy'}_{item_id}"
+    kb = (InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy Link", copy_text=CopyTextButton(text=link))]])
+          if CopyTextButton else None)
+    await query.message.reply_text(
+        f"🔗 <b>{html.escape(str(record.get('name', 'Item')))}</b> direct QR link:\n\n<code>{html.escape(link)}</code>\n\n"
+        "Tap Copy Link and share it. Customer will see this item's QR directly.",
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+    return ConversationHandler.END
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -556,12 +646,22 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             [InlineKeyboardButton("🔗 Change Group Chat ID/Link", callback_data="mega_set_link"), InlineKeyboardButton("📝 Change Caption", callback_data="mega_set_caption")],
             [InlineKeyboardButton("🖼 Change Photo", callback_data="mega_set_photo"), InlineKeyboardButton("📊 Mega Stats", callback_data="mega_stats")],
             [InlineKeyboardButton("✏ Change Mega Menu Name", callback_data="mega_change_menu_name")],
+            [InlineKeyboardButton("📋 Copy Mega Plan Link", callback_data="mega_copy_plan_menu")],
             [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_panel")]
         ]
         if query.message.photo:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
         else:
             await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data == "mega_copy_plan_menu":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        plans = await mega_plans_col.find({}).to_list(length=100)
+        kb = [[InlineKeyboardButton(f"📋 {p.get('name', 'Plan')}", callback_data=f"copymega_{p['plan_id']}")] for p in plans]
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="mega_admin_menu")])
+        await query.message.reply_text("Select a Mega plan to copy its direct QR link:", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
     elif query.data == "mega_add_plan_menu":
@@ -907,6 +1007,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         kb = [
             [InlineKeyboardButton("📝 Change Name", callback_data=f"epname_{p_id}"), InlineKeyboardButton("💰 Change Price", callback_data=f"epprice_{p_id}")],
             [InlineKeyboardButton("🔗 Change Link", callback_data=f"eplink_{p_id}")],
+            [InlineKeyboardButton("📋 Copy Product Link", callback_data=f"copyprod_{p_id}")],
             [InlineKeyboardButton("🔙 Back", callback_data="manage_products_menu")]
         ]
         if query.message.photo:
@@ -1719,104 +1820,131 @@ async def check_invite_link_validity(context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
-        return
-
-    await update.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
+        return ConversationHandler.END
+    await update.message.reply_text("📢 Send the text or photo you want to broadcast. You will see a preview before sending.")
     return WAITING_FOR_BROADCAST
 
 
-async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text):
-    """Original all-user batch broadcast, running in a background task."""
-    bot = application.bot
-    start_time = time.monotonic()
-    success = fail = 0
-    try:
-        # Do not silently exclude users marked blocked by an earlier broadcast.
-        users = await users_col.find({}, {"user_id": 1}).to_list(length=None)
-        total = len(users)
-        if not total:
-            await bot.edit_message_text(chat_id=admin_chat_id, message_id=status_message_id,
-                                        text="⚠️ No users found in database.")
+def broadcast_controls(status):
+    if status == "paused":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Resume", callback_data="bc_resume"),
+                                      InlineKeyboardButton("⏹ Stop", callback_data="bc_stop")]])
+    if status == "running":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⏸ Pause", callback_data="bc_pause"),
+                                      InlineKeyboardButton("⏹ Stop", callback_data="bc_stop")]])
+    return None
+
+
+async def broadcast_control(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not await is_admin(query.from_user.id):
+        return
+    action = query.data
+    state = context.application.bot_data.get("broadcast_state")
+    if action == "bc_cancel":
+        pending = context.application.bot_data.get("broadcast_preview")
+        if pending and pending.get("owner") == query.from_user.id:
+            context.application.bot_data.pop("broadcast_preview", None)
+            await query.message.edit_text("❌ Broadcast cancelled before sending.")
+        return
+    if action == "bc_confirm":
+        pending = context.application.bot_data.get("broadcast_preview")
+        if not pending or pending.get("owner") != query.from_user.id:
+            await query.message.reply_text("⚠️ Preview expired. Send broadcast again.")
             return
+        if state and state.get("status") in ("running", "paused"):
+            await query.message.reply_text("⚠️ Another broadcast is already active.")
+            return
+        context.application.bot_data.pop("broadcast_preview", None)
+        state = {"status": "running", "success": 0, "fail": 0, "processed": 0, "total": 0}
+        context.application.bot_data["broadcast_state"] = state
+        context.application.bot_data["broadcast_running"] = True
+        await query.message.edit_text("🚀 Broadcast starting...", reply_markup=broadcast_controls("running"))
+        context.application.create_task(_broadcast_worker(context.application, query.message.chat_id,
+            query.message.message_id, pending["photo"], pending["caption"], pending["text"], state),
+            name="broadcast_worker")
+        return
+    if not state or state.get("status") not in ("running", "paused"):
+        await query.message.reply_text("No active broadcast.")
+        return
+    if action == "bc_pause":
+        state["status"] = "paused"
+    elif action == "bc_resume":
+        state["status"] = "running"
+    elif action == "bc_stop":
+        state["status"] = "stopped"
+    await update_broadcast_progress(context.bot, query.message.chat_id, query.message.message_id, state)
 
-        async def send_msg(uid):
-            if not isinstance(uid, int):
-                return False
-            for attempt in range(3):
-                try:
-                    if photo_file:
-                        await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
-                    else:
-                        await bot.send_message(chat_id=uid, text=body_text)
-                    return True
-                except RetryAfter as exc:
-                    await asyncio.sleep(min(float(exc.retry_after) + 1, 120))
-                except (TimedOut, NetworkError) as exc:
-                    logger.warning("Temporary broadcast error for %s: %s", uid, exc)
-                    if attempt < 2:
+
+async def update_broadcast_progress(bot, chat_id, msg_id, state):
+    total = state.get("total", 0)
+    done = state.get("processed", 0)
+    status = state["status"]
+    title = {"running": "🚀 Broadcast Running", "paused": "⏸ Broadcast Paused",
+             "stopped": "⏹ Broadcast Stopped", "completed": "✅ Broadcast Completed"}.get(status, status)
+    txt = (f"<b>{title}</b>\n\n📊 Total: {total}\n✅ Sent: {state['success']}\n"
+           f"❌ Failed: {state['fail']}\n⏳ Remaining: {max(total-done, 0)}\n"
+           f"📈 Progress: {done*100//total if total else 0}%")
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=txt,
+                                    parse_mode=ParseMode.HTML, reply_markup=broadcast_controls(status))
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            logger.warning("Broadcast status update: %s", e)
+    except Exception as e:
+        logger.warning("Broadcast status update: %s", e)
+
+
+async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text, state):
+    bot = application.bot
+    try:
+        users = await users_col.find({}, {"user_id": 1}).to_list(length=None)
+        state["total"] = len(users)
+        last_update = time.monotonic()
+        # Send sequentially so Pause/Stop takes effect between individual users.
+        for record in users:
+            while state["status"] == "paused":
+                await asyncio.sleep(0.3)
+            if state["status"] == "stopped":
+                break
+            uid = record.get("user_id")
+            delivered = False
+            if isinstance(uid, int):
+                for attempt in range(3):
+                    if state["status"] == "stopped":
+                        break
+                    try:
+                        if photo_file:
+                            await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
+                        else:
+                            await bot.send_message(chat_id=uid, text=body_text)
+                        delivered = True
+                        break
+                    except RetryAfter as exc:
+                        await asyncio.sleep(min(float(exc.retry_after)+1, 120))
+                    except (TimedOut, NetworkError):
                         await asyncio.sleep(attempt + 1)
-                except Forbidden as exc:
-                    logger.info("Cannot deliver to user %s: %s", uid, exc)
-                    return False
-                except Exception as exc:
-                    logger.warning("Broadcast failed for %s: %s", uid, exc)
-                    return False
-            return False
-
-        last_update = start_time
-        for i in range(0, total, 30):
-            chunk = users[i:i + 30]
-            results = await asyncio.gather(*(send_msg(u.get("user_id")) for u in chunk))
-            success += sum(results)
-            fail += len(results) - sum(results)
-            processed = success + fail
-            now = time.monotonic()
-            if now - last_update >= 3 or processed == total:
-                elapsed = max(now - start_time, 0.001)
-                remaining = total - processed
-                eta = int(remaining * elapsed / processed)
-                minutes, seconds = divmod(eta, 60)
-                progress_text = (
-                    "🚀 <b>Broadcast In Progress...</b>\n\n"
-                    f"📊 Total Target: <code>{total}</code>\n"
-                    f"✅ Sent: <code>{success}</code>\n"
-                    f"❌ Failed: <code>{fail}</code>\n"
-                    f"⏳ Remaining: <code>{remaining}</code>\n"
-                    f"📈 Progress: <code>{processed * 100 // total}%</code>\n"
-                    f"⏱️ ETA: <code>{minutes}m {seconds}s</code>"
-                )
-                try:
-                    await bot.edit_message_text(chat_id=admin_chat_id,
-                                                message_id=status_message_id,
-                                                text=progress_text, parse_mode=ParseMode.HTML)
-                except Exception as exc:
-                    logger.warning("Broadcast progress update failed: %s", exc)
-                last_update = now
-            # Slow batches enough to leave API capacity for commands and buttons.
-            await asyncio.sleep(1)
-
-        elapsed = int(time.monotonic() - start_time)
-        minutes, seconds = divmod(elapsed, 60)
-        final_text = (
-            "✅ <b>Broadcast Completed!</b>\n\n"
-            f"📊 Total Target: <code>{total}</code>\n"
-            f"✅ Success: <code>{success}</code>\n"
-            f"❌ Failed: <code>{fail}</code>\n"
-            f"⏱️ Time Taken: <code>{minutes}m {seconds}s</code>"
-        )
-        try:
-            await bot.edit_message_text(chat_id=admin_chat_id, message_id=status_message_id,
-                                        text=final_text, parse_mode=ParseMode.HTML)
-        except Exception:
-            await bot.send_message(chat_id=admin_chat_id, text=final_text,
-                                   parse_mode=ParseMode.HTML)
+                    except Forbidden:
+                        break
+                    except Exception as exc:
+                        logger.warning("Broadcast failed for %s: %s", uid, exc)
+                        break
+            if state["status"] == "stopped":
+                break
+            state["success" if delivered else "fail"] += 1
+            state["processed"] += 1
+            if time.monotonic()-last_update >= 2 or state["processed"] == state["total"]:
+                await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
+                last_update = time.monotonic()
+            await asyncio.sleep(0.045)
+        if state["status"] != "stopped":
+            state["status"] = "completed"
+        await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
     except Exception:
-        logger.exception("Unexpected broadcast error")
-        try:
-            await bot.send_message(chat_id=admin_chat_id,
-                                   text=f"⚠️ Broadcast interrupted. Sent: {success}, Failed: {fail}.")
-        except Exception:
-            logger.exception("Unable to report broadcast interruption")
+        logger.exception("Broadcast worker interrupted")
+        state["status"] = "stopped"
+        await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
     finally:
         application.bot_data["broadcast_running"] = False
 
@@ -1824,38 +1952,22 @@ async def _broadcast_worker(application, admin_chat_id, status_message_id, photo
 async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
-
-    application = context.application
-    if application.bot_data.get("broadcast_running"):
-        await update.message.reply_text("⚠️ A broadcast is already running. Please wait for it to finish.")
+    state = context.application.bot_data.get("broadcast_state")
+    if state and state.get("status") in ("running", "paused"):
+        await update.message.reply_text("⚠️ A broadcast is already active.")
         return ConversationHandler.END
-
-    photo_file = update.message.photo[-1].file_id if update.message.photo else None
-    caption_text = update.message.caption or ""
-    body_text = update.message.text or ""
-
-    # Set the flag before yielding to avoid starting two simultaneous broadcasts.
-    application.bot_data["broadcast_running"] = True
-    try:
-        status_msg = await update.message.reply_text(
-            "🚀 Broadcast started in background. You can keep using the bot."
-        )
-        application.create_task(
-            _broadcast_worker(
-                application,
-                update.effective_chat.id,
-                status_msg.message_id,
-                photo_file,
-                caption_text,
-                body_text,
-            ),
-            name="broadcast_worker",
-        )
-    except Exception:
-        application.bot_data["broadcast_running"] = False
-        logger.exception("Failed to start background broadcast")
-        await update.message.reply_text("❌ Could not start broadcast. Please try again.")
-
+    photo = update.message.photo[-1].file_id if update.message.photo else None
+    caption = update.message.caption or ""
+    body = update.message.text or ""
+    context.application.bot_data["broadcast_preview"] = {
+        "owner": update.effective_user.id, "photo": photo, "caption": caption, "text": body}
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Start Broadcast", callback_data="bc_confirm"),
+                                InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")]])
+    if photo:
+        await update.message.reply_photo(photo=photo, caption=f"📢 Preview\n\n{caption}"[:1024])
+    else:
+        await update.message.reply_text(f"📢 Preview:\n\n{body}"[:4096])
+    await update.message.reply_text("Send this broadcast to all users?", reply_markup=kb)
     return ConversationHandler.END
 
 
@@ -1907,13 +2019,14 @@ def main():
         "epname_.*|epprice_.*|eplink_.*|mega_access_menu|megabuy_.*|mega_admin_menu|"
         "mega_add_plan_menu|mega_remove_plan_menu|megadelplan_.*|mega_change_price_menu|"
         "megachprice_.*|mega_change_days_menu|megachdays_.*|mega_set_link|mega_set_caption|"
-        "mega_set_photo|mega_change_menu_name|mega_stats)$"
+        "mega_set_photo|mega_change_menu_name|mega_stats|mega_copy_plan_menu)$"
     )
 
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(button_router, pattern=callback_pattern),
             CommandHandler("broadcast", broadcast_command),
+            CommandHandler("start", direct_start),
             CommandHandler("admin", admin_command),
         ],
         states={
@@ -1943,16 +2056,17 @@ def main():
             MEGA_CHANGING_MENU_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_menu_name_receive)],
         },
         fallbacks=[
-            CommandHandler("start", start),
+            CommandHandler("start", direct_start),
             CallbackQueryHandler(button_router, pattern=callback_pattern),
         ],
     )
 
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("sethowto", set_howto_command))
     app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(show_copy_link, pattern="^(copyprod_|copymega_).+"))
+    app.add_handler(CallbackQueryHandler(broadcast_control, pattern="^bc_(confirm|cancel|pause|resume|stop)$"))
     app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|megaapprove|megareject)_"))
 
     app.run_polling()
