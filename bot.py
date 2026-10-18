@@ -41,40 +41,67 @@ except ImportError:
 # Telegram Bot API supports primary (blue), success (green), danger (red),
 # and default (client-themed). Other colours in design mockups are not API styles.
 def _button_color_style(label, callback_data):
+    """Choose Telegram's supported button style for existing and future menus.
+
+    Only primary (blue), success (green), danger (red), and the client's
+    default style are supported. Custom image colours cannot be reproduced.
+    """
     label = (label or "").lower()
     action = (callback_data or "").lower()
 
-    # Destructive actions and broadcast stop/cancel
+    # Always prioritize destructive operations, including newly added ones.
     if (action.startswith(("delprod_", "megadelplan_", "reject_", "megareject_"))
-            or action in ("bc_stop", "bc_cancel", "remove_admin_menu", "remove_product_menu", "mega_remove_plan_menu")
-            or any(word in label for word in ("❌", "🗑", "⏹ stop"))):
+            or action in {"bc_stop", "bc_cancel", "remove_admin_menu",
+                          "remove_product_menu", "mega_remove_plan_menu"}
+            or any(w in label for w in ("remove", "delete", "reject", "cancel",
+                                        "stop", "❌", "🗑", "➖"))):
         return "danger"
 
-    # Purchases, approval and positive confirmations
+    # Main menu and product/plan purchase buttons, including future products.
     if (action.startswith(("buy_", "megabuy_", "approve_", "megaapprove_"))
-            or action in ("bc_confirm", "bc_resume", "admin_broadcast", "mega_add_plan_menu", "add_product_menu", "add_admin_menu")
-            or any(word in label for word in ("🛒", "✅", "▶️ resume", "➕ add"))):
+            or action in {"bc_confirm", "bc_resume", "admin_broadcast",
+                          "mega_add_plan_menu", "add_product_menu", "add_admin_menu"}
+            or any(w in label for w in ("buy", "approve", "resume", "confirm",
+                                        "broadcast", "➕", "🛒", "✅"))):
         return "success"
 
-    # Navigation, plan/product management, copy links, and admin options
-    if (action.startswith(("editprod_", "copyprod_", "copymega_", "epname_", "epprice_", "eplink_"))
-            or action in ("mega_access_menu", "admin_panel", "manage_products_menu", "mega_admin_menu", "mega_copy_plan_menu", "admin_stats", "bc_pause")
-            or action.startswith(("set_", "mega_set_", "mega_change_", "megachprice_", "megachdays_"))
-            or any(word in label for word in ("📦", "📁", "📋", "📊", "✏", "💰", "💳", "🖼", "🎥"))):
+    # Back/help/support remain neutral to distinguish navigation.
+    if (action in {"main_menu", "how"}
+            or label.startswith(("🔙", "⬅", "◀"))
+            or "back" in label or "support" in label or "how to buy" in label):
+        return None
+
+    # All other administrative and navigation actions use blue.
+    if (action.startswith(("editprod_", "copyprod_", "copymega_", "epname_",
+                           "epprice_", "eplink_", "set_", "mega_set_",
+                           "mega_change_", "megachprice_", "megachdays_"))
+            or action in {"mega_access_menu", "admin_panel", "manage_products_menu",
+                          "mega_admin_menu", "mega_copy_plan_menu", "admin_stats",
+                          "mega_stats", "bc_pause"}
+            or any(w in label for w in ("product", "mega", "plan", "stats",
+                                        "price", "change", "manage", "copy",
+                                        "settings", "📦", "📁", "📋", "📊"))):
         return "primary"
 
-    return None  # Telegram's default colour for Back, Help, Support, etc.
+    # New unknown buttons get blue, so they aren't silently unstyled.
+    return "primary"
 
 
 class InlineKeyboardButton(TelegramInlineKeyboardButton):
-    """Preserve all existing button behavior; add Telegram-supported styling."""
+    """Attach official Telegram Bot API style to every inline button.
 
-    def to_dict(self, recursive=True):
-        data = super().to_dict(recursive=recursive)
-        style = _button_color_style(self.text, self.callback_data)
+    PTB 22.8 accepts additional Bot API fields via api_kwargs. The actual
+    display colour depends on whether the Telegram client supports styles.
+    """
+
+    def __init__(self, text, *args, **kwargs):
+        callback_data = kwargs.get("callback_data")
+        style = _button_color_style(text, callback_data)
         if style:
-            data["style"] = style
-        return data
+            api_kwargs = dict(kwargs.get("api_kwargs") or {})
+            api_kwargs.setdefault("style", style)
+            kwargs["api_kwargs"] = api_kwargs
+        super().__init__(text, *args, **kwargs)
 
 
 # Logging Setup
