@@ -196,11 +196,13 @@ async def initialize_settings():
 
 def new_order_id():
     # Cryptographically random order ID.
-    return "ORD" + secrets.token_hex(7).upper()
+    return "order" + secrets.token_hex(7)
 
 
-def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group"):
+def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group", order_id: str = ""):
     params = {"pa": upi_id, "pn": name, "am": str(amount), "cu": "INR"}
+    if order_id:
+        params["tn"] = order_id  # Order ID as UPI payment note
     upi_url = "upi://pay?" + urlencode(params)
     qr = qrcode.QRCode(
         version=1,
@@ -511,12 +513,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
         order_id = new_order_id()
         context.user_data["mega_order_id"] = order_id
-        qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}")
+        qr_bio = generate_upi_qr(current_upi, p_price, name=f"Mega {p_name}", order_id=order_id)
         payment_text = (
             "✦ <b>MEGA PAYMENT</b>\n\n"
             f"📦 Plan: {p_name}\n"
             f"🔹 Amount: ₹{p_price}\n"
-            f"🧾 Order ID: <code>{order_id}</code>\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n"
             f"🔹 Validity: {p_name}\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -717,12 +719,12 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         order_id = new_order_id()
         context.user_data["order_id"] = order_id
         context.user_data.pop("mega_selected_plan_id", None)
-        qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name)
+        qr_bio = generate_upi_qr(current_upi, current_price, name=prod_name, order_id=order_id)
         payment_text = (
             "✦ <b>PREMIUM PAYMENT</b>\n\n"
             f"📦 Product: {prod_name}\n"
             f"🔹 Amount: ₹{current_price}\n"
-            f"🧾 Order ID: <code>{order_id}</code>\n"
+            f"🆔 Order ID: <code>{order_id}</code>\n"
             "🔹 Validity: Lifetime\n\n"
             "───────────────────\n\n"
             "🔹 <b>PAYMENT METHODS</b>\n\n"
@@ -1261,7 +1263,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         pending_msg = (
             "✅ Payment Verification Under Review\n\n"
-            f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
+            f"🆔 Order ID: <code>{purchase_doc['order_id']}</code>\n"
             f"Hello {customer_mention},\n\n"
             "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
             "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
@@ -1281,8 +1283,8 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         forward_caption = (
             f"🔔 <b>New Mega Payment Verification Request!</b>\n\n"
             f"👤 User ID: <code>{user.id}</code>\n"
-            f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
-            f"🔗 Customer: {customer_mention}\n"
+            f"🔗 Username : {customer_mention}\n"
+            f"🆔 Order ID: <code>{purchase_doc['order_id']}</code>\n"
             f"📦 Plan: {p_name}\n"
             f"💰 Amount: ₹{p_price}\n\n"
             f"Please check the screenshot below:"
@@ -1336,7 +1338,7 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     pending_msg = (
         "✅ Payment Verification Under Review\n\n"
-        f"🧾 Order ID: <code>{purchase_doc['order_id']}</code>\n"
+        f"🆔 Order ID: <code>{purchase_doc['order_id']}</code>\n"
         f"Hello {customer_mention},\n\n"
         "Your payment verification request has been forwarded to our Admin for review. Please wait while the Admin verifies your payment.\n\n"
         "Once your payment is successfully verified, you will receive the group invitation link.\n\n"
@@ -1356,7 +1358,8 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     forward_caption = (
         f"🔔 <b>New Payment Verification Request!</b>\n\n"
         f"👤 User ID: <code>{user.id}</code>\n"
-        f"🔗 Customer: {customer_mention}\n"
+        f"🔗 Username : {customer_mention}\n"
+        f"🆔 Order ID: <code>{purchase_doc['order_id']}</code>\n"
         f"📦 Product: {prod_name}\n"
         f"💰 Amount: ₹{current_price}\n\n"
         f"Please check the screenshot below:"
