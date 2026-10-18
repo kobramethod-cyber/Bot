@@ -72,7 +72,7 @@ class InlineKeyboardMarkup(TelegramInlineKeyboardMarkup):
                     api_kwargs.pop("style", None)
                 else:
                     api_kwargs["style"] = style
-                object.__setattr__(coloured_button, "_api_kwargs", MappingProxyType(api_kwargs))
+                object.__setattr__(coloured_button, "api_kwargs", MappingProxyType(api_kwargs))
                 coloured_row.append(coloured_button)
             coloured_rows.append(coloured_row)
         super().__init__(coloured_rows, *args, **kwargs)
