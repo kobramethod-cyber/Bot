@@ -43,11 +43,7 @@ except ImportError:
 # Telegram supports success=green, primary=blue, danger=red, and default.
 # Sequence is applied independently to every inline keyboard, row by row.
 # Callback data, URLs, payment logic, broadcasts and handlers stay unchanged.
-BUTTON_COLOUR_SEQUENCE = (
-    "success", "primary", "danger", None,
-    "primary", "success", None, "danger",
-    "success", None, "primary", "danger",
-)
+BUTTON_COLOUR_SEQUENCE = ("success", "primary", "danger")
 
 
 # Keep the original button constructor for all existing and future buttons.
@@ -1731,52 +1727,79 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_expiring_subscriptions(context: ContextTypes.DEFAULT_TYPE):
+    """Notify and remove expired Mega members independently, retrying failed kicks."""
     try:
         now = datetime.utcnow()
-        cursor = mega_subs_col.find({"status": "active", "expiry_time": {"$ne": None, "$lte": now}})
+        group = await get_setting("mega_group_link")
+        if not group:
+            logger.error("Mega expiry: no group Chat ID configured; will retry next run")
+            return
+        chat_target = int(group) if str(group).lstrip("-").isdigit() else group
+        cursor = mega_subs_col.find({
+            "status": "active", "expiry_time": {"$ne": None, "$lte": now}
+        })
         async for sub in cursor:
             user_id = sub["user_id"]
-            invite_link_to_revoke = sub.get("invite_link")
-            mega_group_target = await get_setting("mega_group_link")
-            plan_name = sub.get("plan_name", "Mega Plan")
-            approval_time = sub.get("approval_time")
-            expiry_time = sub.get("expiry_time")
-            
-            start_date_str = approval_time.strftime("%Y-%m-%d") if approval_time else "N/A"
-            end_date_str = expiry_time.strftime("%Y-%m-%d") if expiry_time else "N/A"
-            
-            try:
-                expiry_message = (
-                    "📅 **Your Subscription Has Expired**\n\n"
-                    f"Your subscription to **{plan_name}** has expired and you will be removed from the Channel\n\n"
-                    "**Subscription details**\n"
-                    f"• Plan: {plan_name}\n"
-                    f"• Start date: {start_date_str}\n"
-                    f"• End date: {end_date_str}\n\n"
-                    "To continue enjoying our premium content, please renew your Subscription\n"
-                    "1. Use the /start command\n"
-                    "2. Select 'Mega Group Link'\n"
-                    "3. Choose your desired plan\n\n"
-                    "For any questions or assistance, contact our support team"
-                )
-                await context.bot.send_message(chat_id=user_id, text=expiry_message, parse_mode=ParseMode.MARKDOWN)
-                
-                chat_target = int(mega_group_target) if str(mega_group_target).startswith("-") else mega_group_target
-                await context.bot.ban_chat_member(chat_id=chat_target, user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=chat_target, user_id=user_id)
-                if invite_link_to_revoke:
-                    try:
-                        await context.bot.revoke_chat_invite_link(chat_id=chat_target, invite_link=invite_link_to_revoke)
-                    except Exception:
-                        pass
-                
-                logger.info(f"User {user_id} subscription expired. Notification sent and user removed.")
-            except Exception as e:
-                logger.error(f"Error processing expiry for user {user_id}: {e}")
+            selector = {"_id": sub["_id"], "status": "active"}
+            plan_name = str(sub.get("plan_name", "Mega Plan"))
+            start = sub.get("approval_time")
+            end = sub.get("expiry_time")
+            start_str = start.strftime("%Y-%m-%d") if isinstance(start, datetime) else "N/A"
+            end_str = end.strftime("%Y-%m-%d") if isinstance(end, datetime) else "N/A"
 
-            await mega_subs_col.update_one({"user_id": user_id}, {"$set": {"status": "expired"}})
-    except Exception as e:
-        logger.error(f"Error in check_expiring_subscriptions job: {e}")
+            # A blocked or deactivated account must not prevent removal.
+            if not sub.get("expiry_notification_attempted"):
+                message = (
+                    "📅 Your Mega Subscription Has Expired\n\n"
+                    f"Your subscription to {plan_name} has expired.\n\n"
+                    f"Plan: {plan_name}\n"
+                    f"Start date: {start_str}\n"
+                    f"End date: {end_str}\n\n"
+                    "Your access has ended. To renew, send /start and choose Mega Access."
+                )
+                try:
+                    await context.bot.send_message(chat_id=user_id, text=message)
+                    logger.info("Mega expiry notification sent to user %s", user_id)
+                    await mega_subs_col.update_one(selector, {"$set": {
+                        "expiry_notification_attempted": True,
+                        "expiry_notification_sent": True,
+                    }})
+                except Forbidden as exc:
+                    logger.warning("Mega expiry DM unavailable for user %s: %s", user_id, exc)
+                    await mega_subs_col.update_one(selector, {"$set": {
+                        "expiry_notification_attempted": True,
+                        "expiry_notification_sent": False,
+                    }})
+                except Exception as exc:
+                    logger.warning("Mega expiry DM failed for user %s (will retry): %s", user_id, exc)
+
+            # A successful ban removes the member. Unban allows future renewals.
+            try:
+                await context.bot.ban_chat_member(chat_id=chat_target, user_id=user_id)
+            except Exception as exc:
+                logger.error("Mega expiry KICK FAILED for user %s; retry next minute: %s", user_id, exc)
+                continue  # Keep subscription active so the next job retries.
+
+            # Mark expired as soon as removal succeeds, even if unban/revoke fails.
+            await mega_subs_col.update_one(selector, {"$set": {
+                "status": "expired", "expired_processed_at": datetime.utcnow(),
+                "mega_kick_success": True,
+            }})
+            logger.info("Mega expiry: user %s removed from group %s", user_id, chat_target)
+
+            try:
+                await context.bot.unban_chat_member(chat_id=chat_target, user_id=user_id, only_if_banned=True)
+            except Exception as exc:
+                logger.warning("Mega expiry: unban for future renewal failed for %s: %s", user_id, exc)
+
+            invite_link = sub.get("invite_link")
+            if invite_link:
+                try:
+                    await context.bot.revoke_chat_invite_link(chat_id=chat_target, invite_link=invite_link)
+                except Exception as exc:
+                    logger.info("Mega expiry: invite link could not be revoked for %s: %s", user_id, exc)
+    except Exception:
+        logger.exception("Error in check_expiring_subscriptions job")
 
 
 async def check_invite_link_validity(context: ContextTypes.DEFAULT_TYPE):
