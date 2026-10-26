@@ -925,7 +925,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await query.answer("Unauthorized!", show_alert=True)
             return ConversationHandler.END
 
-        await query.message.reply_text("📢 Send the text or photo you want to broadcast to all users:")
+        await query.message.reply_text("📢 Send text, photo + caption, or video + caption to broadcast to all users:")
         return WAITING_FOR_BROADCAST
 
     elif query.data == "set_upi":
@@ -1885,7 +1885,7 @@ async def check_invite_link_validity(context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
-    await update.message.reply_text("📢 Send the text or photo you want to broadcast. You will see a preview before sending.")
+    await update.message.reply_text("📢 Send text, photo + caption, or video + caption. You will see a preview before sending.")
     return WAITING_FOR_BROADCAST
 
 
@@ -1926,7 +1926,7 @@ async def broadcast_control(update, context):
         context.application.bot_data["broadcast_running"] = True
         await query.message.edit_text("🚀 Broadcast starting...", reply_markup=broadcast_controls("running"))
         context.application.create_task(_broadcast_worker(context.application, query.message.chat_id,
-            query.message.message_id, pending["photo"], pending["caption"], pending["text"], state),
+            query.message.message_id, pending["photo"], pending["video"], pending["caption"], pending["text"], state),
             name="broadcast_worker")
         return
     if not state or state.get("status") not in ("running", "paused"):
@@ -1960,12 +1960,27 @@ async def update_broadcast_progress(bot, chat_id, msg_id, state):
         logger.warning("Broadcast status update: %s", e)
 
 
-async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, caption_text, body_text, state):
-    """Original 30-user concurrent batches, with pause/stop between batches."""
+async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, video_file, caption_text, body_text, state):
+    """Broadcast to active users first, then remaining users, in 30-user batches."""
     bot = application.bot
     try:
-        users = await users_col.find({}, {"user_id": 1}).to_list(length=None)
+        # Two explicit groups guarantee that every active user is processed first.
+        active_users = await users_col.find(
+            {"status": "active"}, {"user_id": 1}
+        ).to_list(length=None)
+        remaining_users = await users_col.find(
+            {"status": {"$ne": "active"}}, {"user_id": 1}
+        ).to_list(length=None)
+        # Deduplicate defensively in case old records share a Telegram ID.
+        seen_ids = set()
+        users = []
+        for entry in active_users + remaining_users:
+            uid = entry.get("user_id")
+            if isinstance(uid, int) and uid not in seen_ids:
+                seen_ids.add(uid)
+                users.append(entry)
         state["total"] = len(users)
+        state["active_total"] = len({u.get("user_id") for u in active_users if isinstance(u.get("user_id"), int)})
         last_update = time.monotonic()
 
         async def send_msg(uid):
@@ -1973,7 +1988,9 @@ async def _broadcast_worker(application, admin_chat_id, status_message_id, photo
                 return False
             for attempt in range(3):
                 try:
-                    if photo_file:
+                    if video_file:
+                        await bot.send_video(chat_id=uid, video=video_file, caption=caption_text)
+                    elif photo_file:
                         await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
                     else:
                         await bot.send_message(chat_id=uid, text=body_text)
@@ -2023,17 +2040,20 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("⚠️ A broadcast is already active.")
         return ConversationHandler.END
     photo = update.message.photo[-1].file_id if update.message.photo else None
+    video = update.message.video.file_id if update.message.video else None
     caption = update.message.caption or ""
     body = update.message.text or ""
     context.application.bot_data["broadcast_preview"] = {
-        "owner": update.effective_user.id, "photo": photo, "caption": caption, "text": body}
+        "owner": update.effective_user.id, "photo": photo, "video": video, "caption": caption, "text": body}
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Start Broadcast", callback_data="bc_confirm"),
                                 InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")]])
-    if photo:
+    if video:
+        await update.message.reply_video(video=video, caption=f"📢 Preview\n\n{caption}"[:1024])
+    elif photo:
         await update.message.reply_photo(photo=photo, caption=f"📢 Preview\n\n{caption}"[:1024])
     else:
         await update.message.reply_text(f"📢 Preview:\n\n{body}"[:4096])
-    await update.message.reply_text("Send this broadcast to all users?", reply_markup=kb)
+    await update.message.reply_text("Start broadcast? Active users will receive it first, then remaining users.", reply_markup=kb)
     return ConversationHandler.END
 
 
@@ -2098,7 +2118,7 @@ def main():
         states={
             WAITING_FOR_SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
             WAITING_FOR_BROADCAST: [
-                MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, execute_broadcast)
+                MessageHandler((filters.PHOTO | filters.VIDEO | filters.TEXT) & ~filters.COMMAND, execute_broadcast)
             ],
             SETTING_UPI: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_upi_receive)],
             SETTING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_price_receive)],
