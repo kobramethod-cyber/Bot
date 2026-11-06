@@ -25,6 +25,8 @@ from telegram.error import Forbidden, RetryAfter, TimedOut, NetworkError, BadReq
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatJoinRequestHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -115,10 +117,12 @@ DEFAULT_SETTINGS = {
         "After payment send screenshot."
     ),
     "mega_menu_name": "📁 Mega Access",
+    "force_sub_enabled": False,
 }
 
 WAITING_FOR_SCREENSHOT = 1
 WAITING_FOR_BROADCAST = 2
+FORCE_SUB_ADD = 31
 
 # Admin Conversation States
 (
@@ -158,6 +162,8 @@ products_col = db["products"]
 mega_plans_col = db["mega_plans"]
 mega_subs_col = db["mega_subs"]
 mega_purchases_col = db["mega_purchases"]
+force_sub_channels_col = db["force_sub_channels"]
+force_sub_requests_col = db["force_sub_requests"]
 
 # Flask app for keep-alive
 app_flask = Flask(__name__)
@@ -263,6 +269,232 @@ def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group", order_id
     return bio
 
 
+# ---------------------------------------------------------------------------
+# Force Subscribe: unlimited channels + pending join-request detection.
+# A pending request is treated as DONE, exactly as configured by the owner.
+# Membership is always checked live, so leaving a channel removes access.
+# ---------------------------------------------------------------------------
+async def force_sub_enabled() -> bool:
+    return bool(await get_setting("force_sub_enabled"))
+
+
+async def get_force_sub_channels():
+    return await force_sub_channels_col.find({"enabled": {"$ne": False}}).sort("title", 1).to_list(length=500)
+
+
+async def force_sub_user_status(bot, user_id: int, channel: dict) -> str:
+    chat_id = channel.get("chat_id")
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        status = getattr(member, "status", "")
+        if status in ("creator", "administrator", "member"):
+            return "joined"
+        if status == "restricted" and getattr(member, "is_member", False):
+            return "joined"
+    except Exception as exc:
+        logger.warning("Force-sub membership check failed for %s: %s", chat_id, exc)
+
+    request = await force_sub_requests_col.find_one({
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "status": "pending",
+    })
+    if request:
+        return "requested"
+    return "missing"
+
+
+async def check_force_sub_user(bot, user_id: int):
+    if not await force_sub_enabled():
+        return True, []
+    channels = await get_force_sub_channels()
+    if not channels:
+        return True, []
+    statuses = []
+    for channel in channels:
+        state = await force_sub_user_status(bot, user_id, channel)
+        statuses.append((channel, state))
+    return all(state in ("joined", "requested") for _, state in statuses), statuses
+
+
+async def force_sub_keyboard(statuses):
+    keyboard = []
+    for channel, state in statuses:
+        title = html.escape(str(channel.get("title") or "Official Channel"))
+        icon = "✅" if state in ("joined", "requested") else "❌"
+        state_text = "DONE" if state in ("joined", "requested") else "NOT DONE"
+        keyboard.append([InlineKeyboardButton(
+            f"{icon} {channel.get('title', 'Channel')} · {state_text}",
+            url=channel.get("invite_link") or "https://t.me/",
+        )])
+    keyboard.append([InlineKeyboardButton("🔄 CHECK AGAIN", callback_data="fsub_check")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_force_sub_message(message, bot, user_id: int):
+    allowed, statuses = await check_force_sub_user(bot, user_id)
+    if allowed:
+        return False
+    text = (
+        "🔐 <b>PREMIUM ACCESS HUB</b>\n\n"
+        "⚠️ <b>JOIN REQUIRED CHANNELS</b>\n\n"
+        "Continue karne ke liye neeche diye gaye har channel ko join karein "
+        "<b>ya Join Request bhejein</b>. Request bhejne par bhi status DONE ho jayega.\n\n"
+        "📌 <b>Channel Status:</b>\n"
+    )
+    for channel, state in statuses:
+        title = html.escape(str(channel.get("title") or "Official Channel"))
+        if state == "joined":
+            line = "✅ DONE — Joined"
+        elif state == "requested":
+            line = "✅ DONE — Request received"
+        else:
+            line = "❌ NOT DONE — Join / Request required"
+        text += f"\n📢 <b>{title}</b>\n{line}\n"
+    text += "\n🔄 Join/Request ke baad <b>CHECK AGAIN</b> dabayein."
+    await message.reply_text(text, reply_markup=await force_sub_keyboard(statuses), parse_mode=ParseMode.HTML)
+    return True
+
+
+async def show_force_sub_query(query, bot, user_id: int):
+    allowed, statuses = await check_force_sub_user(bot, user_id)
+    if allowed:
+        return False
+    text = (
+        "🔐 <b>PREMIUM ACCESS HUB</b>\n\n"
+        "⚠️ <b>JOIN REQUIRED CHANNELS</b>\n\n"
+        "Har channel ko join karein ya Join Request bhejein. Pending request ko bhi DONE maana jayega.\n\n"
+        "📌 <b>Channel Status:</b>\n"
+    )
+    for channel, state in statuses:
+        title = html.escape(str(channel.get("title") or "Official Channel"))
+        line = ("✅ DONE — Joined" if state == "joined" else
+                "✅ DONE — Request received" if state == "requested" else
+                "❌ NOT DONE — Join / Request required")
+        text += f"\n📢 <b>{title}</b>\n{line}\n"
+    text += "\n🔄 Join/Request ke baad <b>CHECK AGAIN</b> dabayein."
+    markup = await force_sub_keyboard(statuses)
+    try:
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    except BadRequest:
+        await query.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    return True
+
+
+async def on_force_sub_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    request = update.chat_join_request
+    if not request:
+        return
+    channel = await force_sub_channels_col.find_one({"chat_id": request.chat.id, "enabled": {"$ne": False}})
+    if not channel:
+        return
+    await force_sub_requests_col.update_one(
+        {"user_id": request.from_user.id, "chat_id": request.chat.id},
+        {"$set": {
+            "user_id": request.from_user.id,
+            "chat_id": request.chat.id,
+            "status": "pending",
+            "request_date": request.date,
+            "updated_at": datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+    logger.info("Recorded force-sub join request: user=%s channel=%s", request.from_user.id, request.chat.id)
+
+
+async def on_force_sub_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    change = update.chat_member
+    if not change:
+        return
+    channel = await force_sub_channels_col.find_one({"chat_id": change.chat.id})
+    if not channel:
+        return
+    user_id = change.new_chat_member.user.id
+    new_status = change.new_chat_member.status
+    if new_status in ("creator", "administrator", "member") or (
+        new_status == "restricted" and getattr(change.new_chat_member, "is_member", False)
+    ):
+        state = "approved"
+    elif new_status in ("left", "kicked"):
+        state = "left"
+    else:
+        return
+    await force_sub_requests_col.update_one(
+        {"user_id": user_id, "chat_id": change.chat.id},
+        {"$set": {"status": state, "updated_at": datetime.utcnow()}},
+        upsert=True,
+    )
+
+
+async def force_sub_add_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    parts = [part.strip() for part in (update.message.text or "").split("|", 2)]
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        await update.message.reply_text(
+            "❌ Format galat hai.\n\n<code>CHANNEL_ID | Channel Name | Join Link</code>\n"
+            "Example: <code>-1001234567890 | Official Updates | https://t.me/example</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return FORCE_SUB_ADD
+    raw_id, title = parts[0], parts[1]
+    invite_link = parts[2] if len(parts) > 2 else ""
+    try:
+        chat_id = int(raw_id) if raw_id.lstrip("-").isdigit() else raw_id
+        chat = await context.bot.get_chat(chat_id)
+        me = await context.bot.get_me()
+        bot_member = await context.bot.get_chat_member(chat_id=chat.id, user_id=me.id)
+        if bot_member.status not in ("administrator", "creator"):
+            await update.message.reply_text("❌ Pehle bot ko us channel ka Admin banao, phir add karo.")
+            return ConversationHandler.END
+        if bot_member.status == "administrator" and not getattr(bot_member, "can_invite_users", False):
+            await update.message.reply_text("❌ Bot ko channel mein <b>Invite Users</b> permission bhi do, taaki Join Request updates mil sakein.", parse_mode=ParseMode.HTML)
+            return ConversationHandler.END
+        if not invite_link:
+            if getattr(chat, "username", None):
+                invite_link = f"https://t.me/{chat.username}"
+            else:
+                invite_link = await context.bot.export_chat_invite_link(chat.id)
+        await force_sub_channels_col.update_one(
+            {"chat_id": chat.id},
+            {"$set": {
+                "chat_id": chat.id,
+                "title": title or chat.title or "Official Channel",
+                "invite_link": invite_link,
+                "enabled": True,
+                "added_at": datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+        await update.message.reply_text(
+            f"✅ <b>Force Subscribe Channel Added</b>\n\n📢 {html.escape(title)}\n🆔 <code>{chat.id}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.exception("Unable to add force-sub channel")
+        await update.message.reply_text(f"❌ Channel add nahi hua. Chat ID/link aur bot admin permission check karein.\n<code>{html.escape(str(exc))[:500]}</code>", parse_mode=ParseMode.HTML)
+    return ConversationHandler.END
+
+
+async def direct_start(update, context):
+    """Handle deep links, while enforcing Force Subscribe before payments."""
+    user = update.effective_user
+    if not await is_admin(user.id):
+        blocked = await show_force_sub_message(update.message, context.bot, user.id)
+        if blocked:
+            return ConversationHandler.END
+    args = context.args or []
+    if args and args[0].startswith("buy_"):
+        return await send_direct_payment(update, context, "product", args[0][4:])
+    if args and args[0].startswith("mega_"):
+        return await send_direct_payment(update, context, "mega", args[0][5:])
+    await start(update, context)
+    return ConversationHandler.END
+
+
 async def send_direct_payment(update, context, kind, item_id):
     """Open a product/mega QR directly from a Telegram /start deep link."""
     user = update.effective_user
@@ -312,17 +544,6 @@ async def send_direct_payment(update, context, kind, item_id):
     return WAITING_FOR_SCREENSHOT
 
 
-async def direct_start(update, context):
-    """Handle deep links in the conversation handler, keeping screenshot state."""
-    args = context.args or []
-    if args and args[0].startswith("buy_"):
-        return await send_direct_payment(update, context, "product", args[0][4:])
-    if args and args[0].startswith("mega_"):
-        return await send_direct_payment(update, context, "mega", args[0][5:])
-    await start(update, context)
-    return ConversationHandler.END
-
-
 async def show_copy_link(update, context):
     query = update.callback_query
     await query.answer()
@@ -361,6 +582,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         },
         upsert=True,
     )
+
+    if not await is_admin(user.id):
+        blocked = await show_force_sub_message(update.message, context.bot, user.id)
+        if blocked:
+            return
 
     price = await get_setting("price")
     welcome_template = await get_setting("welcome_text")
@@ -437,6 +663,8 @@ async def get_formatted_stats_text() -> str:
     total_categories = await products_col.count_documents({})
     current_price = await get_setting("price")
     support_username = await get_setting("support_username")
+    force_join_status = "ON" if await force_sub_enabled() else "OFF"
+    force_join_count = await force_sub_channels_col.count_documents({})
 
     uptime_seconds = int(time.time() - BOT_START_TIME)
     days, rem = divmod(uptime_seconds, 86400)
@@ -469,7 +697,7 @@ async def get_formatted_stats_text() -> str:
         f"Cᴀᴛᴇɢᴏʀɪᴇꜱ : {total_categories} active / {total_categories}\n"
         f"Uᴘɪ Iᴅꜱ : 1 active / 1\n"
         f"Bᴜʏ-Aʟʟ Pʀɪᴄᴇ : ₹{current_price}\n"
-        f"Fᴏʀᴄᴇ Jᴏɪɴ : OFF (0)\n"
+        f"Fᴏʀᴄᴇ Jᴏɪɴ : {force_join_status} ({force_join_count})\n"
         f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n\n"
         f"Sʏꜱᴛᴇᴍ\n"
         f"Uᴘᴛɪᴍᴇ : {uptime_str}\n"
@@ -484,7 +712,6 @@ async def get_formatted_stats_text() -> str:
 
 async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     user = query.from_user
 
     if not await is_admin(user.id):
@@ -501,6 +728,7 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑 Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("🔐 Force Subscribe", callback_data="fsub_menu")],
         [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
@@ -515,6 +743,106 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     await query.answer()
     user = query.from_user
+
+    if query.data == "fsub_check":
+        allowed, _ = await check_force_sub_user(context.bot, user.id)
+        if allowed:
+            query.data = "main_menu"
+        else:
+            await show_force_sub_query(query, context.bot, user.id)
+            return ConversationHandler.END
+    elif not await is_admin(user.id) and not query.data.startswith("fsub_"):
+        blocked = await show_force_sub_query(query, context.bot, user.id)
+        if blocked:
+            return ConversationHandler.END
+
+    if query.data == "fsub_menu":
+        if not await is_admin(user.id):
+            await query.answer("Unauthorized!", show_alert=True)
+            return ConversationHandler.END
+        enabled = await force_sub_enabled()
+        count = await force_sub_channels_col.count_documents({})
+        label = "🟢 Disable Force Subscribe" if enabled else "🔴 Enable Force Subscribe"
+        kb = [
+            [InlineKeyboardButton("➕ Add Channel", callback_data="fsub_add")],
+            [InlineKeyboardButton("🗑 Manage / Remove Channels", callback_data="fsub_list")],
+            [InlineKeyboardButton(label, callback_data="fsub_toggle")],
+            [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")],
+        ]
+        text = ("🔐 <b>FORCE SUBSCRIBE MANAGER</b>\n\n"
+                f"Status: {'ON' if enabled else 'OFF'}\n"
+                f"Configured channels: <code>{count}</code>\n\n"
+                "Joined = DONE\nJoin Request received = DONE\nLeft channel = NOT DONE")
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data == "fsub_add":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await query.message.reply_text(
+            "➕ <b>Add Force Subscribe Channel</b>\n\n"
+            "Bot ko pehle channel ka Admin banayein. Phir ye format bhejein:\n"
+            "<code>CHANNEL_ID | Channel Name | Join Link</code>\n\n"
+            "Example:\n<code>-1001234567890 | Official Updates | https://t.me/example</code>\n"
+            "Private channel ke liye invite link dein.",
+            parse_mode=ParseMode.HTML,
+        )
+        return FORCE_SUB_ADD
+
+    elif query.data == "fsub_list":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        channels = await force_sub_channels_col.find({}).to_list(length=500)
+        kb = [[InlineKeyboardButton(f"❌ Remove: {c.get('title', c.get('chat_id'))}", callback_data=f"fsubdel_{c.get('chat_id')}")] for c in channels]
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="fsub_menu")])
+        text = "🗑 <b>MANAGE FORCE SUBSCRIBE CHANNELS</b>\n\n" + ("Select a channel to remove:" if channels else "No channels configured.")
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data == "fsub_toggle":
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        await set_setting("force_sub_enabled", not await force_sub_enabled())
+        enabled = await force_sub_enabled()
+        count = await force_sub_channels_col.count_documents({})
+        label = "🟢 Disable Force Subscribe" if enabled else "🔴 Enable Force Subscribe"
+        kb = [
+            [InlineKeyboardButton("➕ Add Channel", callback_data="fsub_add")],
+            [InlineKeyboardButton("🗑 Manage / Remove Channels", callback_data="fsub_list")],
+            [InlineKeyboardButton(label, callback_data="fsub_toggle")],
+            [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")],
+        ]
+        text = ("🔐 <b>FORCE SUBSCRIBE MANAGER</b>\n\n"
+                f"Status: {'ON' if enabled else 'OFF'}\n"
+                f"Configured channels: <code>{count}</code>\n\n"
+                "Joined = DONE\nJoin Request received = DONE\nLeft channel = NOT DONE")
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    elif query.data.startswith("fsubdel_"):
+        if not await is_admin(user.id):
+            return ConversationHandler.END
+        raw_id = query.data[len("fsubdel_"):]
+        chat_id = int(raw_id) if raw_id.lstrip("-").isdigit() else raw_id
+        await force_sub_channels_col.delete_one({"chat_id": chat_id})
+        channels = await force_sub_channels_col.find({}).to_list(length=500)
+        kb = [[InlineKeyboardButton(f"❌ Remove: {c.get('title', c.get('chat_id'))}", callback_data=f"fsubdel_{c.get('chat_id')}")] for c in channels]
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="fsub_menu")])
+        text = "🗑 <b>MANAGE FORCE SUBSCRIBE CHANNELS</b>\n\n" + ("Select a channel to remove:" if channels else "No channels configured.")
+        if query.message.photo:
+            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        else:
+            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
 
     if query.data == "main_menu":
         price = await get_setting("price")
@@ -1359,6 +1687,10 @@ async def set_howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await is_admin(update.effective_user.id):
+        blocked = await show_force_sub_message(update.message, context.bot, update.effective_user.id)
+        if blocked:
+            return ConversationHandler.END
     if not update.message.photo:
         await update.message.reply_text("⚠ Please send a valid image/screenshot of your payment!")
         return WAITING_FOR_SCREENSHOT
@@ -2078,6 +2410,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
+        [InlineKeyboardButton("🔐 Force Subscribe", callback_data="fsub_menu")],
         [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
@@ -2105,7 +2438,8 @@ def main():
         "epname_.*|epprice_.*|eplink_.*|mega_access_menu|megabuy_.*|mega_admin_menu|"
         "mega_add_plan_menu|mega_remove_plan_menu|megadelplan_.*|mega_change_price_menu|"
         "megachprice_.*|mega_change_days_menu|megachdays_.*|mega_set_link|mega_set_caption|"
-        "mega_set_photo|mega_change_menu_name|mega_stats|mega_copy_plan_menu)$"
+        "mega_set_photo|mega_change_menu_name|mega_stats|mega_copy_plan_menu|"
+        "fsub_menu|fsub_add|fsub_list|fsub_toggle|fsub_check|fsubdel_.*)$"
     )
 
     conv_handler = ConversationHandler(
@@ -2140,6 +2474,7 @@ def main():
             MEGA_CHANGING_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_caption_receive)],
             MEGA_CHANGING_PHOTO: [MessageHandler(filters.PHOTO, mega_change_photo_receive)],
             MEGA_CHANGING_MENU_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_menu_name_receive)],
+            FORCE_SUB_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, force_sub_add_receive)],
         },
         fallbacks=[
             CommandHandler("start", direct_start),
@@ -2154,8 +2489,10 @@ def main():
     app.add_handler(CallbackQueryHandler(show_copy_link, pattern="^(copyprod_|copymega_).+"))
     app.add_handler(CallbackQueryHandler(broadcast_control, pattern="^bc_(confirm|cancel|pause|resume|stop)$"))
     app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|megaapprove|megareject)_"))
+    app.add_handler(ChatJoinRequestHandler(on_force_sub_join_request))
+    app.add_handler(ChatMemberHandler(on_force_sub_chat_member, ChatMemberHandler.CHAT_MEMBER))
 
-    app.run_polling()
+    app.run_polling(allowed_updates=["message", "callback_query", "chat_member", "chat_join_request"])
 
 
 if __name__ == "__main__":
