@@ -9,6 +9,7 @@ import logging
 import os
 import time
 import asyncio
+import re
 import sys
 import platform
 from datetime import datetime, timedelta
@@ -25,8 +26,6 @@ from telegram.error import Forbidden, RetryAfter, TimedOut, NetworkError, BadReq
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
-    ChatJoinRequestHandler,
-    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -117,12 +116,11 @@ DEFAULT_SETTINGS = {
         "After payment send screenshot."
     ),
     "mega_menu_name": "📁 Mega Access",
-    "force_sub_enabled": False,
 }
 
 WAITING_FOR_SCREENSHOT = 1
 WAITING_FOR_BROADCAST = 2
-FORCE_SUB_ADD = 31
+WAITING_FOR_BROADCAST_DELETE_CUSTOM = 3
 
 # Admin Conversation States
 (
@@ -157,13 +155,12 @@ purchases_col = db["purchases"]
 settings_col = db["settings"]
 admins_col = db["admins"]
 products_col = db["products"]
+broadcast_messages_col = db["broadcast_messages"]
 
 # Mega Collections
 mega_plans_col = db["mega_plans"]
 mega_subs_col = db["mega_subs"]
 mega_purchases_col = db["mega_purchases"]
-force_sub_channels_col = db["force_sub_channels"]
-force_sub_requests_col = db["force_sub_requests"]
 
 # Flask app for keep-alive
 app_flask = Flask(__name__)
@@ -269,232 +266,6 @@ def generate_upi_qr(upi_id: str, amount: int, name: str = "Desi Group", order_id
     return bio
 
 
-# ---------------------------------------------------------------------------
-# Force Subscribe: unlimited channels + pending join-request detection.
-# A pending request is treated as DONE, exactly as configured by the owner.
-# Membership is always checked live, so leaving a channel removes access.
-# ---------------------------------------------------------------------------
-async def force_sub_enabled() -> bool:
-    return bool(await get_setting("force_sub_enabled"))
-
-
-async def get_force_sub_channels():
-    return await force_sub_channels_col.find({"enabled": {"$ne": False}}).sort("title", 1).to_list(length=500)
-
-
-async def force_sub_user_status(bot, user_id: int, channel: dict) -> str:
-    chat_id = channel.get("chat_id")
-    try:
-        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        status = getattr(member, "status", "")
-        if status in ("creator", "administrator", "member"):
-            return "joined"
-        if status == "restricted" and getattr(member, "is_member", False):
-            return "joined"
-    except Exception as exc:
-        logger.warning("Force-sub membership check failed for %s: %s", chat_id, exc)
-
-    request = await force_sub_requests_col.find_one({
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "status": "pending",
-    })
-    if request:
-        return "requested"
-    return "missing"
-
-
-async def check_force_sub_user(bot, user_id: int):
-    if not await force_sub_enabled():
-        return True, []
-    channels = await get_force_sub_channels()
-    if not channels:
-        return True, []
-    statuses = []
-    for channel in channels:
-        state = await force_sub_user_status(bot, user_id, channel)
-        statuses.append((channel, state))
-    return all(state in ("joined", "requested") for _, state in statuses), statuses
-
-
-async def force_sub_keyboard(statuses):
-    keyboard = []
-    for channel, state in statuses:
-        title = html.escape(str(channel.get("title") or "Official Channel"))
-        icon = "✅" if state in ("joined", "requested") else "❌"
-        state_text = "DONE" if state in ("joined", "requested") else "NOT DONE"
-        keyboard.append([InlineKeyboardButton(
-            f"{icon} {channel.get('title', 'Channel')} · {state_text}",
-            url=channel.get("invite_link") or "https://t.me/",
-        )])
-    keyboard.append([InlineKeyboardButton("🔄 CHECK AGAIN", callback_data="fsub_check")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-async def show_force_sub_message(message, bot, user_id: int):
-    allowed, statuses = await check_force_sub_user(bot, user_id)
-    if allowed:
-        return False
-    text = (
-        "🔐 <b>PREMIUM ACCESS HUB</b>\n\n"
-        "⚠️ <b>JOIN REQUIRED CHANNELS</b>\n\n"
-        "Continue karne ke liye neeche diye gaye har channel ko join karein "
-        "<b>ya Join Request bhejein</b>. Request bhejne par bhi status DONE ho jayega.\n\n"
-        "📌 <b>Channel Status:</b>\n"
-    )
-    for channel, state in statuses:
-        title = html.escape(str(channel.get("title") or "Official Channel"))
-        if state == "joined":
-            line = "✅ DONE — Joined"
-        elif state == "requested":
-            line = "✅ DONE — Request received"
-        else:
-            line = "❌ NOT DONE — Join / Request required"
-        text += f"\n📢 <b>{title}</b>\n{line}\n"
-    text += "\n🔄 Join/Request ke baad <b>CHECK AGAIN</b> dabayein."
-    await message.reply_text(text, reply_markup=await force_sub_keyboard(statuses), parse_mode=ParseMode.HTML)
-    return True
-
-
-async def show_force_sub_query(query, bot, user_id: int):
-    allowed, statuses = await check_force_sub_user(bot, user_id)
-    if allowed:
-        return False
-    text = (
-        "🔐 <b>PREMIUM ACCESS HUB</b>\n\n"
-        "⚠️ <b>JOIN REQUIRED CHANNELS</b>\n\n"
-        "Har channel ko join karein ya Join Request bhejein. Pending request ko bhi DONE maana jayega.\n\n"
-        "📌 <b>Channel Status:</b>\n"
-    )
-    for channel, state in statuses:
-        title = html.escape(str(channel.get("title") or "Official Channel"))
-        line = ("✅ DONE — Joined" if state == "joined" else
-                "✅ DONE — Request received" if state == "requested" else
-                "❌ NOT DONE — Join / Request required")
-        text += f"\n📢 <b>{title}</b>\n{line}\n"
-    text += "\n🔄 Join/Request ke baad <b>CHECK AGAIN</b> dabayein."
-    markup = await force_sub_keyboard(statuses)
-    try:
-        if query.message.photo:
-            await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode=ParseMode.HTML)
-        else:
-            await query.message.edit_text(text=text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    except BadRequest:
-        await query.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    return True
-
-
-async def on_force_sub_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    request = update.chat_join_request
-    if not request:
-        return
-    channel = await force_sub_channels_col.find_one({"chat_id": request.chat.id, "enabled": {"$ne": False}})
-    if not channel:
-        return
-    await force_sub_requests_col.update_one(
-        {"user_id": request.from_user.id, "chat_id": request.chat.id},
-        {"$set": {
-            "user_id": request.from_user.id,
-            "chat_id": request.chat.id,
-            "status": "pending",
-            "request_date": request.date,
-            "updated_at": datetime.utcnow(),
-        }},
-        upsert=True,
-    )
-    logger.info("Recorded force-sub join request: user=%s channel=%s", request.from_user.id, request.chat.id)
-
-
-async def on_force_sub_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    change = update.chat_member
-    if not change:
-        return
-    channel = await force_sub_channels_col.find_one({"chat_id": change.chat.id})
-    if not channel:
-        return
-    user_id = change.new_chat_member.user.id
-    new_status = change.new_chat_member.status
-    if new_status in ("creator", "administrator", "member") or (
-        new_status == "restricted" and getattr(change.new_chat_member, "is_member", False)
-    ):
-        state = "approved"
-    elif new_status in ("left", "kicked"):
-        state = "left"
-    else:
-        return
-    await force_sub_requests_col.update_one(
-        {"user_id": user_id, "chat_id": change.chat.id},
-        {"$set": {"status": state, "updated_at": datetime.utcnow()}},
-        upsert=True,
-    )
-
-
-async def force_sub_add_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    parts = [part.strip() for part in (update.message.text or "").split("|", 2)]
-    if len(parts) < 2 or not parts[0] or not parts[1]:
-        await update.message.reply_text(
-            "❌ Format galat hai.\n\n<code>CHANNEL_ID | Channel Name | Join Link</code>\n"
-            "Example: <code>-1001234567890 | Official Updates | https://t.me/example</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return FORCE_SUB_ADD
-    raw_id, title = parts[0], parts[1]
-    invite_link = parts[2] if len(parts) > 2 else ""
-    try:
-        chat_id = int(raw_id) if raw_id.lstrip("-").isdigit() else raw_id
-        chat = await context.bot.get_chat(chat_id)
-        me = await context.bot.get_me()
-        bot_member = await context.bot.get_chat_member(chat_id=chat.id, user_id=me.id)
-        if bot_member.status not in ("administrator", "creator"):
-            await update.message.reply_text("❌ Pehle bot ko us channel ka Admin banao, phir add karo.")
-            return ConversationHandler.END
-        if bot_member.status == "administrator" and not getattr(bot_member, "can_invite_users", False):
-            await update.message.reply_text("❌ Bot ko channel mein <b>Invite Users</b> permission bhi do, taaki Join Request updates mil sakein.", parse_mode=ParseMode.HTML)
-            return ConversationHandler.END
-        if not invite_link:
-            if getattr(chat, "username", None):
-                invite_link = f"https://t.me/{chat.username}"
-            else:
-                invite_link = await context.bot.export_chat_invite_link(chat.id)
-        await force_sub_channels_col.update_one(
-            {"chat_id": chat.id},
-            {"$set": {
-                "chat_id": chat.id,
-                "title": title or chat.title or "Official Channel",
-                "invite_link": invite_link,
-                "enabled": True,
-                "added_at": datetime.utcnow(),
-            }},
-            upsert=True,
-        )
-        await update.message.reply_text(
-            f"✅ <b>Force Subscribe Channel Added</b>\n\n📢 {html.escape(title)}\n🆔 <code>{chat.id}</code>",
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as exc:
-        logger.exception("Unable to add force-sub channel")
-        await update.message.reply_text(f"❌ Channel add nahi hua. Chat ID/link aur bot admin permission check karein.\n<code>{html.escape(str(exc))[:500]}</code>", parse_mode=ParseMode.HTML)
-    return ConversationHandler.END
-
-
-async def direct_start(update, context):
-    """Handle deep links, while enforcing Force Subscribe before payments."""
-    user = update.effective_user
-    if not await is_admin(user.id):
-        blocked = await show_force_sub_message(update.message, context.bot, user.id)
-        if blocked:
-            return ConversationHandler.END
-    args = context.args or []
-    if args and args[0].startswith("buy_"):
-        return await send_direct_payment(update, context, "product", args[0][4:])
-    if args and args[0].startswith("mega_"):
-        return await send_direct_payment(update, context, "mega", args[0][5:])
-    await start(update, context)
-    return ConversationHandler.END
-
-
 async def send_direct_payment(update, context, kind, item_id):
     """Open a product/mega QR directly from a Telegram /start deep link."""
     user = update.effective_user
@@ -544,6 +315,17 @@ async def send_direct_payment(update, context, kind, item_id):
     return WAITING_FOR_SCREENSHOT
 
 
+async def direct_start(update, context):
+    """Handle deep links in the conversation handler, keeping screenshot state."""
+    args = context.args or []
+    if args and args[0].startswith("buy_"):
+        return await send_direct_payment(update, context, "product", args[0][4:])
+    if args and args[0].startswith("mega_"):
+        return await send_direct_payment(update, context, "mega", args[0][5:])
+    await start(update, context)
+    return ConversationHandler.END
+
+
 async def show_copy_link(update, context):
     query = update.callback_query
     await query.answer()
@@ -582,11 +364,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         },
         upsert=True,
     )
-
-    if not await is_admin(user.id):
-        blocked = await show_force_sub_message(update.message, context.bot, user.id)
-        if blocked:
-            return
 
     price = await get_setting("price")
     welcome_template = await get_setting("welcome_text")
@@ -663,8 +440,6 @@ async def get_formatted_stats_text() -> str:
     total_categories = await products_col.count_documents({})
     current_price = await get_setting("price")
     support_username = await get_setting("support_username")
-    force_join_status = "ON" if await force_sub_enabled() else "OFF"
-    force_join_count = await force_sub_channels_col.count_documents({})
 
     uptime_seconds = int(time.time() - BOT_START_TIME)
     days, rem = divmod(uptime_seconds, 86400)
@@ -697,7 +472,7 @@ async def get_formatted_stats_text() -> str:
         f"Cᴀᴛᴇɢᴏʀɪᴇꜱ : {total_categories} active / {total_categories}\n"
         f"Uᴘɪ Iᴅꜱ : 1 active / 1\n"
         f"Bᴜʏ-Aʟʟ Pʀɪᴄᴇ : ₹{current_price}\n"
-        f"Fᴏʀᴄᴇ Jᴏɪɴ : {force_join_status} ({force_join_count})\n"
+        f"Fᴏʀᴄᴇ Jᴏɪɴ : OFF (0)\n"
         f"Sᴜᴘᴘᴏʀᴛ : {support_username}\n\n"
         f"Sʏꜱᴛᴇᴍ\n"
         f"Uᴘᴛɪᴍᴇ : {uptime_str}\n"
@@ -712,6 +487,7 @@ async def get_formatted_stats_text() -> str:
 
 async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     user = query.from_user
 
     if not await is_admin(user.id):
@@ -728,7 +504,6 @@ async def admin_panel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑 Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("🔐 Force Subscribe", callback_data="fsub_menu")],
         [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
@@ -743,106 +518,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     await query.answer()
     user = query.from_user
-
-    if query.data == "fsub_check":
-        allowed, _ = await check_force_sub_user(context.bot, user.id)
-        if allowed:
-            query.data = "main_menu"
-        else:
-            await show_force_sub_query(query, context.bot, user.id)
-            return ConversationHandler.END
-    elif not await is_admin(user.id) and not query.data.startswith("fsub_"):
-        blocked = await show_force_sub_query(query, context.bot, user.id)
-        if blocked:
-            return ConversationHandler.END
-
-    if query.data == "fsub_menu":
-        if not await is_admin(user.id):
-            await query.answer("Unauthorized!", show_alert=True)
-            return ConversationHandler.END
-        enabled = await force_sub_enabled()
-        count = await force_sub_channels_col.count_documents({})
-        label = "🟢 Disable Force Subscribe" if enabled else "🔴 Enable Force Subscribe"
-        kb = [
-            [InlineKeyboardButton("➕ Add Channel", callback_data="fsub_add")],
-            [InlineKeyboardButton("🗑 Manage / Remove Channels", callback_data="fsub_list")],
-            [InlineKeyboardButton(label, callback_data="fsub_toggle")],
-            [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")],
-        ]
-        text = ("🔐 <b>FORCE SUBSCRIBE MANAGER</b>\n\n"
-                f"Status: {'ON' if enabled else 'OFF'}\n"
-                f"Configured channels: <code>{count}</code>\n\n"
-                "Joined = DONE\nJoin Request received = DONE\nLeft channel = NOT DONE")
-        if query.message.photo:
-            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        else:
-            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-
-    elif query.data == "fsub_add":
-        if not await is_admin(user.id):
-            return ConversationHandler.END
-        await query.message.reply_text(
-            "➕ <b>Add Force Subscribe Channel</b>\n\n"
-            "Bot ko pehle channel ka Admin banayein. Phir ye format bhejein:\n"
-            "<code>CHANNEL_ID | Channel Name | Join Link</code>\n\n"
-            "Example:\n<code>-1001234567890 | Official Updates | https://t.me/example</code>\n"
-            "Private channel ke liye invite link dein.",
-            parse_mode=ParseMode.HTML,
-        )
-        return FORCE_SUB_ADD
-
-    elif query.data == "fsub_list":
-        if not await is_admin(user.id):
-            return ConversationHandler.END
-        channels = await force_sub_channels_col.find({}).to_list(length=500)
-        kb = [[InlineKeyboardButton(f"❌ Remove: {c.get('title', c.get('chat_id'))}", callback_data=f"fsubdel_{c.get('chat_id')}")] for c in channels]
-        kb.append([InlineKeyboardButton("🔙 Back", callback_data="fsub_menu")])
-        text = "🗑 <b>MANAGE FORCE SUBSCRIBE CHANNELS</b>\n\n" + ("Select a channel to remove:" if channels else "No channels configured.")
-        if query.message.photo:
-            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        else:
-            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-
-    elif query.data == "fsub_toggle":
-        if not await is_admin(user.id):
-            return ConversationHandler.END
-        await set_setting("force_sub_enabled", not await force_sub_enabled())
-        enabled = await force_sub_enabled()
-        count = await force_sub_channels_col.count_documents({})
-        label = "🟢 Disable Force Subscribe" if enabled else "🔴 Enable Force Subscribe"
-        kb = [
-            [InlineKeyboardButton("➕ Add Channel", callback_data="fsub_add")],
-            [InlineKeyboardButton("🗑 Manage / Remove Channels", callback_data="fsub_list")],
-            [InlineKeyboardButton(label, callback_data="fsub_toggle")],
-            [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")],
-        ]
-        text = ("🔐 <b>FORCE SUBSCRIBE MANAGER</b>\n\n"
-                f"Status: {'ON' if enabled else 'OFF'}\n"
-                f"Configured channels: <code>{count}</code>\n\n"
-                "Joined = DONE\nJoin Request received = DONE\nLeft channel = NOT DONE")
-        if query.message.photo:
-            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        else:
-            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-
-    elif query.data.startswith("fsubdel_"):
-        if not await is_admin(user.id):
-            return ConversationHandler.END
-        raw_id = query.data[len("fsubdel_"):]
-        chat_id = int(raw_id) if raw_id.lstrip("-").isdigit() else raw_id
-        await force_sub_channels_col.delete_one({"chat_id": chat_id})
-        channels = await force_sub_channels_col.find({}).to_list(length=500)
-        kb = [[InlineKeyboardButton(f"❌ Remove: {c.get('title', c.get('chat_id'))}", callback_data=f"fsubdel_{c.get('chat_id')}")] for c in channels]
-        kb.append([InlineKeyboardButton("🔙 Back", callback_data="fsub_menu")])
-        text = "🗑 <b>MANAGE FORCE SUBSCRIBE CHANNELS</b>\n\n" + ("Select a channel to remove:" if channels else "No channels configured.")
-        if query.message.photo:
-            await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        else:
-            await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
 
     if query.data == "main_menu":
         price = await get_setting("price")
@@ -1687,10 +1362,6 @@ async def set_howto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not await is_admin(update.effective_user.id):
-        blocked = await show_force_sub_message(update.message, context.bot, update.effective_user.id)
-        if blocked:
-            return ConversationHandler.END
     if not update.message.photo:
         await update.message.reply_text("⚠ Please send a valid image/screenshot of your payment!")
         return WAITING_FOR_SCREENSHOT
@@ -2217,7 +1888,9 @@ async def check_invite_link_validity(context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update.message.from_user.id):
         return ConversationHandler.END
-    await update.message.reply_text("📢 Send text, photo + caption, or video + caption. You will see a preview before sending.")
+    await update.message.reply_text(
+        "📢 Send text, photo + caption, or video + caption. You will see a preview and choose auto-delete time before sending."
+    )
     return WAITING_FOR_BROADCAST
 
 
@@ -2231,6 +1904,129 @@ def broadcast_controls(status):
     return None
 
 
+def broadcast_delete_keyboard():
+    rows = [
+        [InlineKeyboardButton("5 Minutes", callback_data="bc_delete_300"),
+         InlineKeyboardButton("10 Minutes", callback_data="bc_delete_600")],
+        [InlineKeyboardButton("30 Minutes", callback_data="bc_delete_1800"),
+         InlineKeyboardButton("1 Hour", callback_data="bc_delete_3600")],
+        [InlineKeyboardButton("3 Hours", callback_data="bc_delete_10800"),
+         InlineKeyboardButton("6 Hours", callback_data="bc_delete_21600")],
+        [InlineKeyboardButton("12 Hours", callback_data="bc_delete_43200"),
+         InlineKeyboardButton("24 Hours", callback_data="bc_delete_86400")],
+        [InlineKeyboardButton("✍️ Custom Time", callback_data="bc_delete_custom"),
+         InlineKeyboardButton("♾️ Never Delete", callback_data="bc_delete_0")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def broadcast_confirm_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Start Broadcast", callback_data="bc_confirm"),
+                                  InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")]])
+
+
+def format_delete_duration(seconds):
+    if not seconds:
+        return "Never Delete"
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400} day(s)"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} hour(s)"
+    if seconds % 60 == 0:
+        return f"{seconds // 60} minute(s)"
+    return f"{seconds} seconds"
+
+
+async def broadcast_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending = context.application.bot_data.get("broadcast_preview")
+    if not pending or pending.get("owner") != update.effective_user.id:
+        return ConversationHandler.END
+    raw = (update.message.text or "").strip().lower()
+    match = re.fullmatch(r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?", raw)
+    if not match:
+        await update.message.reply_text("⚠️ Invalid time. Examples: 45 minutes, 2 hours, 1 day, or 90 seconds.")
+        return WAITING_FOR_BROADCAST_DELETE_CUSTOM
+    amount = int(match.group(1))
+    unit = match.group(2) or "m"
+    multiplier = 1 if unit in ("s", "sec", "secs", "second", "seconds") else (
+        60 if unit in ("m", "min", "mins", "minute", "minutes") else (
+            3600 if unit in ("h", "hr", "hrs", "hour", "hours") else 86400
+        )
+    )
+    seconds = amount * multiplier
+    if seconds < 60 or seconds > 30 * 86400:
+        await update.message.reply_text("⚠️ Choose a duration from 1 minute to 30 days.")
+        return WAITING_FOR_BROADCAST_DELETE_CUSTOM
+    pending["delete_after"] = seconds
+    await update.message.reply_text(
+        f"📢 <b>Broadcast Confirmation</b>\n\n⏱ Auto Delete: {format_delete_duration(seconds)}\n\nStart broadcast?",
+        reply_markup=broadcast_confirm_keyboard(), parse_mode=ParseMode.HTML
+    )
+    return WAITING_FOR_BROADCAST_DELETE_CUSTOM
+
+
+async def schedule_broadcast_delete(application, record):
+    """Schedule one persisted broadcast-message deletion."""
+    if not application.job_queue:
+        logger.error("JobQueue is unavailable; cannot schedule broadcast auto-delete")
+        return
+    delay = max(0, float(record.get("delete_at", time.time())) - time.time())
+    application.job_queue.run_once(
+        delete_broadcast_message,
+        when=delay,
+        data={"chat_id": record["chat_id"], "message_id": record["message_id"]},
+        name=f"broadcast-delete-{record['chat_id']}-{record['message_id']}"
+    )
+
+
+async def delete_broadcast_message(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
+    if chat_id is None or message_id is None:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await broadcast_messages_col.update_one(
+            {"chat_id": chat_id, "message_id": message_id},
+            {"$set": {"status": "deleted", "deleted_at": time.time()}}
+        )
+    except BadRequest as exc:
+        # Already deleted / too old / no longer accessible: don't loop forever.
+        await broadcast_messages_col.update_one(
+            {"chat_id": chat_id, "message_id": message_id},
+            {"$set": {"status": "delete_failed", "last_error": str(exc), "failed_at": time.time()}}
+        )
+        logger.warning("Could not auto-delete broadcast message %s in %s: %s", message_id, chat_id, exc)
+    except Exception as exc:
+        logger.warning("Temporary auto-delete error for %s in %s: %s", message_id, chat_id, exc)
+        # Keep it pending and retry after five minutes.
+        await broadcast_messages_col.update_one(
+            {"chat_id": chat_id, "message_id": message_id},
+            {"$set": {"last_error": str(exc)}}
+        )
+        if context.job_queue:
+            context.job_queue.run_once(
+                delete_broadcast_message, when=300,
+                data={"chat_id": chat_id, "message_id": message_id},
+                name=f"broadcast-delete-retry-{chat_id}-{message_id}"
+            )
+
+
+async def restore_pending_broadcast_deletions(application):
+    """Restore pending auto-deletions after a Render/process restart."""
+    if not application.job_queue:
+        logger.warning("JobQueue unavailable; pending broadcast deletions were not restored")
+        return
+    now = time.time()
+    async for record in broadcast_messages_col.find({"status": "pending"}):
+        if record.get("delete_at", now) <= now:
+            await schedule_broadcast_delete(application, record)
+        else:
+            await schedule_broadcast_delete(application, record)
+
+
 async def broadcast_control(update, context):
     query = update.callback_query
     await query.answer()
@@ -2238,12 +2034,36 @@ async def broadcast_control(update, context):
         return
     action = query.data
     state = context.application.bot_data.get("broadcast_state")
+
     if action == "bc_cancel":
         pending = context.application.bot_data.get("broadcast_preview")
         if pending and pending.get("owner") == query.from_user.id:
             context.application.bot_data.pop("broadcast_preview", None)
+            context.user_data.pop("awaiting_broadcast_custom_time", None)
             await query.message.edit_text("❌ Broadcast cancelled before sending.")
-        return
+        return ConversationHandler.END
+
+    if action.startswith("bc_delete_"):
+        pending = context.application.bot_data.get("broadcast_preview")
+        if not pending or pending.get("owner") != query.from_user.id:
+            await query.message.reply_text("⚠️ Preview expired. Send broadcast again.")
+            return
+        option = action.removeprefix("bc_delete_")
+        if option == "custom":
+            context.user_data["awaiting_broadcast_custom_time"] = True
+            await query.message.edit_text(
+                "✍️ Enter auto-delete time. Examples: <code>45 minutes</code>, <code>2 hours</code>, <code>1 day</code>.\n\nMinimum: 1 minute | Maximum: 30 days.",
+                parse_mode=ParseMode.HTML
+            )
+            return WAITING_FOR_BROADCAST_DELETE_CUSTOM
+        pending["delete_after"] = int(option)
+        await query.message.edit_text(
+            f"📢 <b>Broadcast Confirmation</b>\n\n⏱ Auto Delete: {format_delete_duration(int(option))}\n\n"
+            "Start broadcast? Active users will receive it first, then remaining users.",
+            reply_markup=broadcast_confirm_keyboard(), parse_mode=ParseMode.HTML
+        )
+        return WAITING_FOR_BROADCAST_DELETE_CUSTOM
+
     if action == "bc_confirm":
         pending = context.application.bot_data.get("broadcast_preview")
         if not pending or pending.get("owner") != query.from_user.id:
@@ -2253,14 +2073,20 @@ async def broadcast_control(update, context):
             await query.message.reply_text("⚠️ Another broadcast is already active.")
             return
         context.application.bot_data.pop("broadcast_preview", None)
+        context.user_data.pop("awaiting_broadcast_custom_time", None)
         state = {"status": "running", "success": 0, "fail": 0, "processed": 0, "total": 0}
         context.application.bot_data["broadcast_state"] = state
         context.application.bot_data["broadcast_running"] = True
         await query.message.edit_text("🚀 Broadcast starting...", reply_markup=broadcast_controls("running"))
-        context.application.create_task(_broadcast_worker(context.application, query.message.chat_id,
-            query.message.message_id, pending["photo"], pending["video"], pending["caption"], pending["text"], state),
-            name="broadcast_worker")
-        return
+        context.application.create_task(
+            _broadcast_worker(
+                context.application, query.message.chat_id, query.message.message_id,
+                pending["photo"], pending["video"], pending["caption"], pending["text"],
+                int(pending.get("delete_after", 0)), state
+            ), name="broadcast_worker"
+        )
+        return ConversationHandler.END
+
     if not state or state.get("status") not in ("running", "paused"):
         await query.message.reply_text("No active broadcast.")
         return
@@ -2292,18 +2118,13 @@ async def update_broadcast_progress(bot, chat_id, msg_id, state):
         logger.warning("Broadcast status update: %s", e)
 
 
-async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, video_file, caption_text, body_text, state):
-    """Broadcast to active users first, then remaining users, in 30-user batches."""
+async def _broadcast_worker(application, admin_chat_id, status_message_id, photo_file, video_file,
+                            caption_text, body_text, delete_after, state):
+    """Active users first; pace sends and persist each successful auto-delete."""
     bot = application.bot
     try:
-        # Two explicit groups guarantee that every active user is processed first.
-        active_users = await users_col.find(
-            {"status": "active"}, {"user_id": 1}
-        ).to_list(length=None)
-        remaining_users = await users_col.find(
-            {"status": {"$ne": "active"}}, {"user_id": 1}
-        ).to_list(length=None)
-        # Deduplicate defensively in case old records share a Telegram ID.
+        active_users = await users_col.find({"status": "active"}, {"user_id": 1}).to_list(length=None)
+        remaining_users = await users_col.find({"status": {"$ne": "active"}}, {"user_id": 1}).to_list(length=None)
         seen_ids = set()
         users = []
         for entry in active_users + remaining_users:
@@ -2317,42 +2138,72 @@ async def _broadcast_worker(application, admin_chat_id, status_message_id, photo
 
         async def send_msg(uid):
             if not isinstance(uid, int):
-                return False
-            for attempt in range(3):
+                return None
+            for attempt in range(5):
                 try:
                     if video_file:
-                        await bot.send_video(chat_id=uid, video=video_file, caption=caption_text)
+                        sent = await bot.send_video(chat_id=uid, video=video_file, caption=caption_text)
                     elif photo_file:
-                        await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
+                        sent = await bot.send_photo(chat_id=uid, photo=photo_file, caption=caption_text)
                     else:
-                        await bot.send_message(chat_id=uid, text=body_text)
-                    return True
+                        sent = await bot.send_message(chat_id=uid, text=body_text)
+                    if delete_after > 0:
+                        record = {
+                            "chat_id": uid, "message_id": sent.message_id,
+                            "delete_at": time.time() + delete_after,
+                            "status": "pending", "created_at": time.time()
+                        }
+                        await broadcast_messages_col.update_one(
+                            {"chat_id": uid, "message_id": sent.message_id},
+                            {"$setOnInsert": record}, upsert=True
+                        )
+                        await schedule_broadcast_delete(application, record)
+                    return sent
                 except RetryAfter as exc:
-                    await asyncio.sleep(min(float(exc.retry_after) + 1, 120))
-                except (TimedOut, NetworkError):
-                    if attempt < 2:
-                        await asyncio.sleep(attempt + 1)
-                except Forbidden:
-                    return False
+                    retry_seconds = exc.retry_after.total_seconds() if hasattr(exc.retry_after, "total_seconds") else float(exc.retry_after)
+                    await asyncio.sleep(max(1, retry_seconds) + 0.5)
+                except (TimedOut, NetworkError) as exc:
+                    if attempt < 4:
+                        await asyncio.sleep(min(attempt + 1, 5))
+                    else:
+                        logger.warning("Broadcast network failure for %s: %s", uid, exc)
+                        return None
+                except Forbidden as exc:
+                    logger.info("Broadcast recipient unavailable/blocked bot %s: %s", uid, exc)
+                    return None
                 except Exception as exc:
                     logger.warning("Broadcast failed for %s: %s", uid, exc)
-                    return False
-            return False
+                    return None
+            return None
 
-        # Restore the original batch size and concurrent sending behavior.
-        for i in range(0, len(users), 30):
+        # Conservative pacing: 20 recipients per batch, 0.05s between sends,
+        # then an additional 1s pause between batches.
+        for i in range(0, len(users), 20):
             while state["status"] == "paused":
                 await asyncio.sleep(0.3)
             if state["status"] == "stopped":
                 break
-            chunk = users[i:i + 30]
-            results = await asyncio.gather(*(send_msg(u.get("user_id")) for u in chunk))
-            state["success"] += sum(results)
-            state["fail"] += len(results) - sum(results)
-            state["processed"] += len(results)
-            if time.monotonic() - last_update >= 2 or state["processed"] == state["total"]:
-                await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
-                last_update = time.monotonic()
+            chunk = users[i:i + 20]
+            for index, entry in enumerate(chunk):
+                while state["status"] == "paused":
+                    await asyncio.sleep(0.3)
+                if state["status"] == "stopped":
+                    break
+                result = await send_msg(entry.get("user_id"))
+                if result is not None:
+                    state["success"] += 1
+                else:
+                    state["fail"] += 1
+                state["processed"] += 1
+                if time.monotonic() - last_update >= 2 or state["processed"] == state["total"]:
+                    await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
+                    last_update = time.monotonic()
+                if index < len(chunk) - 1:
+                    await asyncio.sleep(0.05)
+            if state["status"] == "stopped":
+                break
+            if i + 20 < len(users):
+                await asyncio.sleep(1)
         if state["status"] != "stopped":
             state["status"] = "completed"
         await update_broadcast_progress(bot, admin_chat_id, status_message_id, state)
@@ -2375,18 +2226,24 @@ async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     video = update.message.video.file_id if update.message.video else None
     caption = update.message.caption or ""
     body = update.message.text or ""
+    if not (photo or video or body.strip()):
+        await update.message.reply_text("⚠️ Please send a text message, photo with caption, or video with caption.")
+        return WAITING_FOR_BROADCAST
     context.application.bot_data["broadcast_preview"] = {
-        "owner": update.effective_user.id, "photo": photo, "video": video, "caption": caption, "text": body}
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Start Broadcast", callback_data="bc_confirm"),
-                                InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel")]])
+        "owner": update.effective_user.id, "photo": photo, "video": video,
+        "caption": caption, "text": body, "delete_after": 0
+    }
     if video:
         await update.message.reply_video(video=video, caption=f"📢 Preview\n\n{caption}"[:1024])
     elif photo:
         await update.message.reply_photo(photo=photo, caption=f"📢 Preview\n\n{caption}"[:1024])
     else:
         await update.message.reply_text(f"📢 Preview:\n\n{body}"[:4096])
-    await update.message.reply_text("Start broadcast? Active users will receive it first, then remaining users.", reply_markup=kb)
-    return ConversationHandler.END
+    await update.message.reply_text(
+        "⏱ <b>How long should this broadcast post stay visible?</b>\n\nChoose auto-delete duration:",
+        reply_markup=broadcast_delete_keyboard(), parse_mode=ParseMode.HTML
+    )
+    return WAITING_FOR_BROADCAST_DELETE_CUSTOM
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2410,7 +2267,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin_menu"), InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin_menu")],
         [InlineKeyboardButton("📦 Add Product", callback_data="add_product_menu"), InlineKeyboardButton("🗑️ Remove Product", callback_data="remove_product_menu")],
         [InlineKeyboardButton("✏️ Manage Products", callback_data="manage_products_menu")],
-        [InlineKeyboardButton("🔐 Force Subscribe", callback_data="fsub_menu")],
         [InlineKeyboardButton("📁 Mega File Manager", callback_data="mega_admin_menu")],
         [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
     ]
@@ -2427,6 +2283,7 @@ def main():
         if application.job_queue:
             application.job_queue.run_repeating(check_expiring_subscriptions, interval=60, first=10)
             application.job_queue.run_repeating(check_invite_link_validity, interval=300, first=30)
+            await restore_pending_broadcast_deletions(application)
         logger.info("Bot is up and running...")
 
     app.post_init = post_init
@@ -2438,8 +2295,7 @@ def main():
         "epname_.*|epprice_.*|eplink_.*|mega_access_menu|megabuy_.*|mega_admin_menu|"
         "mega_add_plan_menu|mega_remove_plan_menu|megadelplan_.*|mega_change_price_menu|"
         "megachprice_.*|mega_change_days_menu|megachdays_.*|mega_set_link|mega_set_caption|"
-        "mega_set_photo|mega_change_menu_name|mega_stats|mega_copy_plan_menu|"
-        "fsub_menu|fsub_add|fsub_list|fsub_toggle|fsub_check|fsubdel_.*)$"
+        "mega_set_photo|mega_change_menu_name|mega_stats|mega_copy_plan_menu)$"
     )
 
     conv_handler = ConversationHandler(
@@ -2453,6 +2309,10 @@ def main():
             WAITING_FOR_SCREENSHOT: [MessageHandler(filters.PHOTO, receive_screenshot)],
             WAITING_FOR_BROADCAST: [
                 MessageHandler((filters.PHOTO | filters.VIDEO | filters.TEXT) & ~filters.COMMAND, execute_broadcast)
+            ],
+            WAITING_FOR_BROADCAST_DELETE_CUSTOM: [
+                CallbackQueryHandler(broadcast_control, pattern="^bc_(confirm|cancel|delete_.*)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_custom_time)
             ],
             SETTING_UPI: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_upi_receive)],
             SETTING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_price_receive)],
@@ -2474,7 +2334,6 @@ def main():
             MEGA_CHANGING_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_caption_receive)],
             MEGA_CHANGING_PHOTO: [MessageHandler(filters.PHOTO, mega_change_photo_receive)],
             MEGA_CHANGING_MENU_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mega_change_menu_name_receive)],
-            FORCE_SUB_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, force_sub_add_receive)],
         },
         fallbacks=[
             CommandHandler("start", direct_start),
@@ -2487,12 +2346,10 @@ def main():
     app.add_handler(CommandHandler("sethowto", set_howto_command))
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(show_copy_link, pattern="^(copyprod_|copymega_).+"))
-    app.add_handler(CallbackQueryHandler(broadcast_control, pattern="^bc_(confirm|cancel|pause|resume|stop)$"))
+    app.add_handler(CallbackQueryHandler(broadcast_control, pattern="^bc_(confirm|cancel|pause|resume|stop|delete_.*)$"))
     app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|megaapprove|megareject)_"))
-    app.add_handler(ChatJoinRequestHandler(on_force_sub_join_request))
-    app.add_handler(ChatMemberHandler(on_force_sub_chat_member, ChatMemberHandler.CHAT_MEMBER))
 
-    app.run_polling(allowed_updates=["message", "callback_query", "chat_member", "chat_join_request"])
+    app.run_polling()
 
 
 if __name__ == "__main__":
